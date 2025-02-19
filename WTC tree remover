@@ -1,0 +1,5 @@
+workspace.Terrain.Clouds:Destroy()
+workspace["Map Assets"]["Nature Assets"].Cacti:Destroy()
+workspace["Map Assets"]["Nature Assets"].Trees.Palm1:Destroy()
+workspace["Map Assets"]["Nature Assets"].Trees.Palm2:Destroy()
+workspace["Map Assets"]["Nature Assets"].Trees.Tembusu:Destroy()
