@@ -1,0 +1,34 @@
+_G.HeadSize = 14
+_G.Disabled = false  -- Changed to false so it actually runs
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+local function updateHitboxes()
+    if not _G.Disabled then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                local character = player.Character
+                if character and character:FindFirstChild("Humanoid") and character:FindFirstChild("Head") then
+                    local humanoid = character.Humanoid
+                    local head = character.Head
+
+                    -- Adjust hitbox size based on sitting state
+                    local newSize = humanoid.Sit and 14 or 50
+                    if head.Size ~= Vector3.new(newSize, newSize, newSize) then
+                        head.Size = Vector3.new(newSize, newSize, newSize)
+                        head.Transparency = 0
+                        head.BrickColor = BrickColor.new("Red")
+                        head.Material = Enum.Material.Neon
+                        head.CanCollide = false
+                        head.Massless = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Use Heartbeat for better physics updates
+RunService.Heartbeat:Connect(updateHitboxes)
