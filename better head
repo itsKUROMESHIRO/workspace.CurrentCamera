@@ -18,7 +18,7 @@ local function updateHitboxes()
                     local newSize = humanoid.Sit and 14 or 50
                     if head.Size ~= Vector3.new(newSize, newSize, newSize) then
                         head.Size = Vector3.new(newSize, newSize, newSize)
-                        head.Transparency = 0
+                        head.Transparency = 1
                         head.BrickColor = BrickColor.new("Red")
                         head.Material = Enum.Material.Neon
                         head.CanCollide = false
