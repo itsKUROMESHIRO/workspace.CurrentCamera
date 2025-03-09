@@ -1,5 +1,5 @@
 _G.HeadSize = 14
-_G.Disabled = false  -- Changed to false so it actually runs
+_G.Disabled = false  -- Ensure the script runs
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,14 +16,14 @@ local function updateHitboxes()
 
                     -- Adjust hitbox size based on sitting state
                     local newSize = humanoid.Sit and 14 or 50
-                    if head.Size ~= Vector3.new(newSize, newSize, newSize) then
-                        head.Size = Vector3.new(newSize, newSize, newSize)
-                        head.Transparency = 1
-                        head.BrickColor = BrickColor.new("Red")
-                        head.Material = Enum.Material.Neon
-                        head.CanCollide = false
-                        head.Massless = true
-                    end
+                    
+                    -- Prevent unwanted resets
+                    head.Size = Vector3.new(newSize, newSize, newSize)
+                    head.Transparency = 0.99  -- Slightly less than 1 to avoid engine resets
+                    head.BrickColor = BrickColor.new("Red")
+                    head.Material = Enum.Material.Neon
+                    head.CanCollide = false
+                    head.Massless = true
                 end
             end
         end
