@@ -19,7 +19,7 @@ local function updateHitboxes()
                     
                     -- Prevent unwanted resets
                     head.Size = Vector3.new(newSize, newSize, newSize)
-                    head.Transparency = 0.99  -- Slightly less than 1 to avoid engine resets
+                    head.Transparency = 0.4  -- 60% transparency
                     head.BrickColor = BrickColor.new("Red")
                     head.Material = Enum.Material.Neon
                     head.CanCollide = false
