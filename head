@@ -1,18 +1,133 @@
-_G.HeadSize = 14
-_G.Disabled = true
-game:GetService('RunService').RenderStepped:connect(function()
-if _G.Disabled then
-for i,v in next, game:GetService('Players'):GetPlayers() do
-if v.Name ~= game:GetService('Players').LocalPlayer.Name then
-pcall(function()
-v.Character.Head.Size = Vector3.new(_G.HeadSize,_G.HeadSize,_G.HeadSize)
-v.Character.Head.Transparency = 1
-v.Character.Head.BrickColor = BrickColor.new("Red")
-v.Character.Head.Material = "Neon"
-v.Character.Head.CanCollide = false
-v.Character.Head.Massless = true
-end)
+local inputservice = game:GetService("UserInputService")
+local lighting = game:GetService("Lighting")
+
+-- New FFlags Dictionary
+local fflags = {
+    FFlagRenderOptimizeDecalTransparencyInvalidation = "True",
+    FFlagQuaternionPoseCorrection = "True",
+    FFlagSelfieViewEnabled = "True",
+    FFlagDebugForceGenerateHSR = "True",
+    FFlagEnableChildrenLockFromLua = "False",
+    FFlagEnableAudioEmitterDistanceAttenuation = "True",
+    FFlagUseNotificationServiceIsConnected = "False",
+    FFlagToastNotificationsResendDisplayOnInit = "False",
+    FIntCAP1209DataSharingTOSVersion = "0",
+    FFlagFRMRefactor = "False",
+    FFlagMigrateTextureManagerIsLocalAsset = "True",
+    FFlagToastNotificationsUpdateEventParams = "False",
+    FFlagFixParticleEmissionBias2 = "False",
+    FFlagDebugDisableTelemetryEphemeralCounter = "True",
+    FFlagFixCountOfUnreadNotificationError = "False",
+    FFlagEnablePreferredTextSizeStyleFixesInPlayerList = "True",
+    DFIntTaskSchedulerTargetFps = "9999",
+    FIntCameraMaxZoomDistance = "999999"
+}
+
+-- Apply FFlags
+for flag, value in pairs(fflags) do
+    local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '') :: string
+    
+    if value and tostring(value) then
+        value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
+    end
+    
+    if getfflag(fflag) ~= nil then
+        local suc, res = pcall(function()
+            return setfflag(fflag, tostring(value))
+        end)
+        
+        if not suc then
+            warn("Failed to set FFlag:", flag, res)
+        else
+            print("Successfully set FFlag:", flag, "to", value)
+        end
+    else
+        warn("FFlag does not exist:", flag)
+    end
 end
+
+-- Function to remove all existing particles
+local function removeExistingParticles()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+            obj:Destroy()
+        end
+    end
+    print("Initial particles removed!")
 end
+
+-- Function to remove new particles as they appear
+local function detectAndRemoveNewParticles()
+    workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+            obj:Destroy()
+            print("Removed new particle:", obj.ClassName)
+        end
+    end)
 end
-end)
+
+-- Function to remove grass from Terrain
+local function removeGrassFromTerrain()
+    local terrain = workspace:FindFirstChildOfClass("Terrain")
+    if terrain then
+        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground) -- Replace Grass with Ground
+        print("Grass removed from Terrain!")
+    end
+end
+
+-- Function to remove existing grass parts
+local function removeExistingGrassParts()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+            obj:Destroy()
+        end
+    end
+    print("Grass parts removed!")
+end
+
+-- Function to detect and remove new grass parts
+local function detectAndRemoveNewGrass()
+    workspace.DescendantAdded:Connect(function(obj)
+        if obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+            print("Removed new Grass Part")
+        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+            print("Removed new Grass Mesh")
+        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+            obj:Destroy()
+            print("Removed new Grass Decal")
+        end
+    end)
+end
+
+-- Function to remove bloom effects
+local function removeBloomEffects()
+    for _, obj in ipairs(lighting:GetChildren()) do
+        if obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") then
+            obj:Destroy()
+            print("Removed bloom effect:", obj.ClassName)
+        end
+    end
+end
+
+-- Function to remove shadows
+local function disableShadows()
+    lighting.GlobalShadows = false  -- Disables global shadows
+    lighting.Ambient = Color3.fromRGB(255, 255, 255)  -- Brightens the scene
+    lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)  -- Removes shadow contrast
+    print("Shadows disabled!")
+end
+
+-- Run removal functions in the background
+task.spawn(removeExistingParticles)  -- Remove all existing particles
+task.spawn(detectAndRemoveNewParticles)  -- Remove particles as they appear
+task.spawn(removeGrassFromTerrain)  -- Remove grass from Terrain
+task.spawn(removeExistingGrassParts)  -- Remove all existing grass parts
+task.spawn(detectAndRemoveNewGrass)  -- Detect and remove new grass parts
+task.spawn(removeBloomEffects)  -- Remove bloom effects
+task.spawn(disableShadows)  -- Disable shadows
