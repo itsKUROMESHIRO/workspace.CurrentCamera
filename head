@@ -1,4 +1,4 @@
-local inputservice = game:GetService("UserInputService") -- Ensure this exists
+local inputservice = game:GetService("UserInputService")
 
 -- Dictionary of FFlags and their values
 local fflags = {
@@ -15,91 +15,58 @@ local fflags = {
     FFlagDisablePostFx = "True"
 }
 
--- Function to apply FFlags
+-- Apply FFlags
 for flag, value in pairs(fflags) do
-    local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '') :: string
-    
+    local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
+
     if value and tostring(value) then
         value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
     end
     
     if getfflag(fflag) ~= nil then
-        local suc, res = pcall(function()
-            return setfflag(fflag, tostring(value))
-        end)
-        
-        if not suc then
-            warn("Failed to set FFlag:", flag, res)
-        else
-            print("Successfully set FFlag:", flag, "to", value)
-        end
-    else
-        warn("FFlag does not exist:", flag)
+        pcall(setfflag, fflag, tostring(value))
     end
 end
 
--- Function to remove all existing particles
-local function removeExistingParticles()
+-- Function to remove unwanted objects
+local function removeUnwantedObjects()
     for _, obj in ipairs(workspace:GetDescendants()) do
         if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
             obj:Destroy()
+        elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+            obj:Destroy()
         end
     end
-    print("Initial particles removed!")
 end
 
--- Function to detect and remove new particles instantly
-local function detectAndRemoveNewParticles()
-    workspace.DescendantAdded:Connect(function(obj)
-        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
-            obj:Destroy()
-            print("Removed new particle:", obj.ClassName)
-        end
-    end)
+-- Function to handle new unwanted objects efficiently
+local function handleNewObjects(obj)
+    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+        obj:Destroy()
+    elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+        obj:Destroy()
+    elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+        obj:Destroy()
+    elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+        obj:Destroy()
+    end
 end
 
--- Function to remove grass by modifying Terrain
-local function removeGrassFromTerrain()
+-- Function to optimize terrain modification
+local function optimizeTerrain()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground) -- Replaces Grass with Ground
-        print("Grass removed from Terrain!")
+        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground)
     end
 end
 
--- Function to remove existing grass parts
-local function removeExistingGrassParts()
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Part") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
-            obj:Destroy()
-        end
-    end
-    print("Grass parts removed!")
-end
+-- Execute once to clean up existing objects
+task.spawn(removeUnwantedObjects)
+task.spawn(optimizeTerrain)
 
--- Function to continuously remove new grass parts
-local function detectAndRemoveNewGrass()
-    workspace.DescendantAdded:Connect(function(obj)
-        if obj:IsA("Part") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-            print("Removed new Grass Part")
-        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-            print("Removed new Grass Mesh")
-        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
-            obj:Destroy()
-            print("Removed new Grass Decal")
-        end
-    end)
-end
-
--- Run removal functions in the background
-task.spawn(removeExistingParticles)  -- Remove all existing particles
-task.spawn(detectAndRemoveNewParticles)  -- Remove particles as they appear
-task.spawn(removeGrassFromTerrain)  -- Remove grass from Terrain
-task.spawn(removeExistingGrassParts)  -- Remove all existing grass parts
-task.spawn(detectAndRemoveNewGrass)  -- Detect and remove new grass parts
+-- Single connection to handle new objects efficiently
+workspace.DescendantAdded:Connect(handleNewObjects)
