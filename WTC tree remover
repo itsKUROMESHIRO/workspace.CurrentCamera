@@ -1,5 +1,30 @@
-workspace.Terrain.Clouds:Destroy()
-workspace["Map Assets"]["Nature Assets"].Cacti:Destroy()
-workspace["Map Assets"]["Nature Assets"].Trees.Palm1:Destroy()
-workspace["Map Assets"]["Nature Assets"].Trees.Palm2:Destroy()
-workspace["Map Assets"]["Nature Assets"].Trees.Tembusu:Destroy()
+-- Remove all leaves from Trees.Acacia
+local acacia = workspace["Map Assets"]["Nature Assets"].Trees:FindFirstChild("Acacia")
+
+if acacia then
+    for _, obj in pairs(acacia:GetChildren()) do
+        if obj:IsA("Model") and obj:FindFirstChild("Leaves") then
+            obj.Leaves:Destroy()
+        end
+    end
+end
+
+-- Disable terrain decorations
+if workspace:FindFirstChild("Terrain") then
+    workspace.Terrain.Decoration = false
+end
+
+-- Destroy specific objects if they exist
+local objectsToDestroy = {
+    workspace:FindFirstChild("Terrain") and workspace.Terrain:FindFirstChild("Clouds"),
+    workspace["Map Assets"]["Nature Assets"]:FindFirstChild("Cacti"),
+    workspace["Map Assets"]["Nature Assets"].Trees:FindFirstChild("Palm1"),
+    workspace["Map Assets"]["Nature Assets"].Trees:FindFirstChild("Palm2"),
+    workspace["Map Assets"]["Nature Assets"].Trees:FindFirstChild("Tembusu")
+}
+
+for _, obj in pairs(objectsToDestroy) do
+    if obj then
+        obj:Destroy()
+    end
+end
