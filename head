@@ -1,29 +1,21 @@
-local inputservice = game:GetService("UserInputService")
-local lighting = game:GetService("Lighting")
+local inputservice = game:GetService("UserInputService") -- Ensure this exists
 
--- New FFlags Dictionary
+-- Dictionary of FFlags and their values
 local fflags = {
-    FFlagRenderOptimizeDecalTransparencyInvalidation = "True",
-    FFlagQuaternionPoseCorrection = "True",
-    FFlagSelfieViewEnabled = "True",
-    FFlagDebugForceGenerateHSR = "True",
-    FFlagEnableChildrenLockFromLua = "False",
-    FFlagEnableAudioEmitterDistanceAttenuation = "True",
-    FFlagUseNotificationServiceIsConnected = "False",
-    FFlagToastNotificationsResendDisplayOnInit = "False",
-    FIntCAP1209DataSharingTOSVersion = "0",
-    FFlagFRMRefactor = "False",
-    FFlagMigrateTextureManagerIsLocalAsset = "True",
-    FFlagToastNotificationsUpdateEventParams = "False",
-    FFlagFixParticleEmissionBias2 = "False",
-    FFlagDebugDisableTelemetryEphemeralCounter = "True",
-    FFlagFixCountOfUnreadNotificationError = "False",
-    FFlagEnablePreferredTextSizeStyleFixesInPlayerList = "True",
-    DFIntTaskSchedulerTargetFps = "9999",
-    FIntCameraMaxZoomDistance = "999999"
+    DFIntTextureQualityOverride = "True",
+    DFFlagTextureQualityOverrideEnabled = "True",
+    FFlagDebugDisplayFPS = "False",
+    FFlagNewLightAttenuation = "True",
+    FIntTerrainArraySliceSize = "5",
+    FFlagDebugSkyGray = "True",
+    DFIntPerformanceControlTextureQualityBestUtility = "-3",
+    FIntDebugTextureManagerSkipMips = "8",
+    DFIntDebugFRMQualityLevelOverride = "1",
+    FIntRenderShadowIntensity = "False",
+    FFlagDisablePostFx = "True"
 }
 
--- Apply FFlags
+-- Function to apply FFlags
 for flag, value in pairs(fflags) do
     local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '') :: string
     
@@ -56,7 +48,7 @@ local function removeExistingParticles()
     print("Initial particles removed!")
 end
 
--- Function to remove new particles as they appear
+-- Function to detect and remove new particles instantly
 local function detectAndRemoveNewParticles()
     workspace.DescendantAdded:Connect(function(obj)
         if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
@@ -66,11 +58,11 @@ local function detectAndRemoveNewParticles()
     end)
 end
 
--- Function to remove grass from Terrain
+-- Function to remove grass by modifying Terrain
 local function removeGrassFromTerrain()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground) -- Replace Grass with Ground
+        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground) -- Replaces Grass with Ground
         print("Grass removed from Terrain!")
     end
 end
@@ -89,7 +81,7 @@ local function removeExistingGrassParts()
     print("Grass parts removed!")
 end
 
--- Function to detect and remove new grass parts
+-- Function to continuously remove new grass parts
 local function detectAndRemoveNewGrass()
     workspace.DescendantAdded:Connect(function(obj)
         if obj:IsA("Part") and obj.Material == Enum.Material.Grass then
@@ -105,29 +97,9 @@ local function detectAndRemoveNewGrass()
     end)
 end
 
--- Function to remove bloom effects
-local function removeBloomEffects()
-    for _, obj in ipairs(lighting:GetChildren()) do
-        if obj:IsA("BloomEffect") or obj:IsA("SunRaysEffect") then
-            obj:Destroy()
-            print("Removed bloom effect:", obj.ClassName)
-        end
-    end
-end
-
--- Function to remove shadows
-local function disableShadows()
-    lighting.GlobalShadows = false  -- Disables global shadows
-    lighting.Ambient = Color3.fromRGB(255, 255, 255)  -- Brightens the scene
-    lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)  -- Removes shadow contrast
-    print("Shadows disabled!")
-end
-
 -- Run removal functions in the background
 task.spawn(removeExistingParticles)  -- Remove all existing particles
 task.spawn(detectAndRemoveNewParticles)  -- Remove particles as they appear
 task.spawn(removeGrassFromTerrain)  -- Remove grass from Terrain
 task.spawn(removeExistingGrassParts)  -- Remove all existing grass parts
 task.spawn(detectAndRemoveNewGrass)  -- Detect and remove new grass parts
-task.spawn(removeBloomEffects)  -- Remove bloom effects
-task.spawn(disableShadows)  -- Disable shadows
