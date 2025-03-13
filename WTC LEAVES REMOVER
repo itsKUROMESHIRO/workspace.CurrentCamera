@@ -1,0 +1,10 @@
+for _, tree in pairs(workspace["Map Assets"]["Nature Assets"].Trees:GetChildren()) do
+    for _, child in pairs(tree:GetChildren()) do
+        local leaves = child:FindFirstChild("Leaves")
+        if leaves then
+            task.defer(function()
+                leaves:Destroy()
+            end)
+        end
+    end
+end
