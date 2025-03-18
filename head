@@ -11,41 +11,26 @@ local fflags = {
 
 -- Apply FFlags
 for flag, value in pairs(fflags) do
-    local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
+    local fflag = flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
+    value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
 
-    if value and tostring(value) then
-        value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
-    end
-    
     if getfflag(fflag) ~= nil then
-        pcall(setfflag, fflag, tostring(value))
+        pcall(setfflag, fflag, value)
     end
 end
 
--- Function to remove unwanted objects
+-- Function to batch-remove unwanted objects
 local function removeUnwantedObjects()
+    local toDestroy = {}  -- Use table to collect objects first
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
-            obj:Destroy()
-        elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
-            obj:Destroy()
-        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
-            obj:Destroy()
+        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or
+           (obj:IsA("Part") and obj.Material == Enum.Material.Grass) or
+           (obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass) or
+           (obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass")) then
+            table.insert(toDestroy, obj)
         end
     end
-end
-
--- Function to handle new unwanted objects efficiently
-local function handleNewObjects(obj)
-    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
-        obj:Destroy()
-    elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
-        obj:Destroy()
-    elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
-        obj:Destroy()
-    elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+    for _, obj in ipairs(toDestroy) do  -- Destroy all at once
         obj:Destroy()
     end
 end
@@ -54,7 +39,7 @@ end
 local function optimizeTerrain()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground)
+        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Ground)  -- Replace grass with ground
     end
 end
 
@@ -62,11 +47,23 @@ end
 local function disableTerrainDecoration()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        sethiddenproperty(terrain, "Decoration", false) -- Prevents grass, rocks, and plants from spawning
+        pcall(function()
+            sethiddenproperty(terrain, "Decoration", false)
+        end)
     end
 end
 
--- Execute once to clean up existing objects
+-- Function to handle new unwanted objects efficiently
+local function handleNewObjects(obj)
+    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or
+       (obj:IsA("Part") and obj.Material == Enum.Material.Grass) or
+       (obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass) or
+       (obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass")) then
+        task.defer(function() obj:Destroy() end) -- Defer to avoid lag spikes
+    end
+end
+
+-- Execute optimizations
 task.spawn(removeUnwantedObjects)
 task.spawn(optimizeTerrain)
 task.spawn(disableTerrainDecoration)
