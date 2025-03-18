@@ -19,27 +19,16 @@ for flag, value in pairs(fflags) do
     end
 end
 
--- Function to batch-remove unwanted objects
+-- Function to remove unwanted objects
 local function removeUnwantedObjects()
-    local toDestroy = {}  -- Use table to collect objects first
+    local toDestroy = {}
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or
-           (obj:IsA("Part") and obj.Material == Enum.Material.Grass) or
-           (obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass) or
-           (obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass")) then
+        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
             table.insert(toDestroy, obj)
         end
     end
-    for _, obj in ipairs(toDestroy) do  -- Destroy all at once
+    for _, obj in ipairs(toDestroy) do
         obj:Destroy()
-    end
-end
-
--- Function to optimize terrain modification
-local function optimizeTerrain()
-    local terrain = workspace:FindFirstChildOfClass("Terrain")
-    if terrain then
-        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Ground)  -- Replace grass with ground
     end
 end
 
@@ -53,20 +42,16 @@ local function disableTerrainDecoration()
     end
 end
 
--- Function to handle new unwanted objects efficiently
+-- Efficiently handle new objects
 local function handleNewObjects(obj)
-    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or
-       (obj:IsA("Part") and obj.Material == Enum.Material.Grass) or
-       (obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass) or
-       (obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass")) then
-        task.defer(function() obj:Destroy() end) -- Defer to avoid lag spikes
+    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
+        task.defer(obj.Destroy, obj)
     end
 end
 
 -- Execute optimizations
 task.spawn(removeUnwantedObjects)
-task.spawn(optimizeTerrain)
 task.spawn(disableTerrainDecoration)
 
--- Single connection to handle new objects efficiently
+-- Handle new objects efficiently
 workspace.DescendantAdded:Connect(handleNewObjects)
