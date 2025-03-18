@@ -2,15 +2,9 @@ local inputservice = game:GetService("UserInputService")
 
 -- Dictionary of FFlags and their values
 local fflags = {
-    DFIntTextureQualityOverride = "True",
-    DFFlagTextureQualityOverrideEnabled = "True",
-    FFlagDebugDisplayFPS = "False",
-    FFlagNewLightAttenuation = "False",
-    FIntTerrainArraySliceSize = "5",
+    FFlagNewLightAttenuation = "True",
     FFlagDebugSkyGray = "True",
-    DFIntPerformanceControlTextureQualityBestUtility = "-3",
-    FIntDebugTextureManagerSkipMips = "8",
-    DFIntDebugFRMQualityLevelOverride = "1",
+    FIntDebugTextureManagerSkipMips = "-1",
     FIntRenderShadowIntensity = "False",
     FFlagDisablePostFx = "True"
 }
