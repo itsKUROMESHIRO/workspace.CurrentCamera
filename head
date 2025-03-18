@@ -4,22 +4,15 @@ local inputservice = game:GetService("UserInputService")
 local fflags = {
     DFIntTextureQualityOverride = "True",
     DFFlagTextureQualityOverrideEnabled = "True",
-    FFlagDebugDisplayFPS = "True",
-    FFlagNewLightAttenuation = "True",
+    FFlagDebugDisplayFPS = "False",
+    FFlagNewLightAttenuation = "False",
     FIntTerrainArraySliceSize = "5",
     FFlagDebugSkyGray = "True",
     DFIntPerformanceControlTextureQualityBestUtility = "-3",
     FIntDebugTextureManagerSkipMips = "8",
     DFIntDebugFRMQualityLevelOverride = "1",
-    FIntRenderShadowIntensity = "0",
-    FFlagDisablePostFx = "True",
-    DFFlagTextureQualityOverrideEnabled = "True",
-    DFFlagDebugRenderForceTechnologyVoxel = "True",
-    FIntRenderLocalLightUpdatesMin = "1",
-    FIntRenderLocalLightUpdatesMax = "1",
-    FIntRenderLocalLightFadeInMs = "0",
-    DFFlagDebugPauseVoxelizer = "True",
-    FIntRenderShadowmapBias = "0"
+    FIntRenderShadowIntensity = "False",
+    FFlagDisablePostFx = "True"
 }
 
 -- Apply FFlags
@@ -71,9 +64,18 @@ local function optimizeTerrain()
     end
 end
 
+-- Disable terrain decoration
+local function disableTerrainDecoration()
+    local terrain = workspace:FindFirstChildOfClass("Terrain")
+    if terrain then
+        sethiddenproperty(terrain, "Decoration", false) -- Prevents grass, rocks, and plants from spawning
+    end
+end
+
 -- Execute once to clean up existing objects
 task.spawn(removeUnwantedObjects)
 task.spawn(optimizeTerrain)
+task.spawn(disableTerrainDecoration)
 
 -- Single connection to handle new objects efficiently
 workspace.DescendantAdded:Connect(handleNewObjects)
