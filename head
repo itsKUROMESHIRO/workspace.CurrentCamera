@@ -4,7 +4,7 @@ local inputservice = game:GetService("UserInputService")
 local fflags = {
     FFlagNewLightAttenuation = "True",
     FFlagDebugSkyGray = "True",
-    FIntDebugTextureManagerSkipMips = "-1",
+    FIntDebugTextureManagerSkipMips = "8",
     FIntRenderShadowIntensity = "False",
     FFlagDisablePostFx = "True"
 }
