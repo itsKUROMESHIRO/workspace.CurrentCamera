@@ -15,7 +15,7 @@ local function updateHitboxes()
                     local head = character.Head
 
                     -- Adjust hitbox size based on sitting state
-                    local newSize = humanoid.Sit and 14 or 45
+                    local newSize = humanoid.Sit and 14 or 27
                     
                     -- Prevent unwanted resets
                     head.Size = Vector3.new(newSize, newSize, newSize)
