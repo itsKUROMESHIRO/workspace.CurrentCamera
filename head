@@ -9,14 +9,16 @@ local fflags = {
     FFlagDisablePostFx = "True"
 }
 
--- Apply FFlags
+-- Apply FFlags safely
 for flag, value in pairs(fflags) do
     local fflag = flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
     value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
 
-    if getfflag(fflag) ~= nil then
-        pcall(setfflag, fflag, value)
-    end
+    pcall(function()
+        if getfflag(fflag) ~= nil then
+            setfflag(fflag, value)
+        end
+    end)
 end
 
 -- Function to remove unwanted objects
@@ -28,16 +30,18 @@ local function removeUnwantedObjects()
         end
     end
     for _, obj in ipairs(toDestroy) do
-        obj:Destroy()
+        pcall(function() obj:Destroy() end)
     end
 end
 
--- Disable terrain decoration
+-- Disable terrain decoration safely
 local function disableTerrainDecoration()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
         pcall(function()
-            sethiddenproperty(terrain, "Decoration", false)
+            if terrain:FindFirstChild("Decoration") ~= nil then
+                sethiddenproperty(terrain, "Decoration", false)
+            end
         end)
     end
 end
@@ -45,8 +49,13 @@ end
 -- Efficiently handle new objects
 local function handleNewObjects(obj)
     if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
-        task.defer(obj.Destroy, obj)
+        pcall(function() obj:Destroy() end)
     end
+end
+
+-- Prevent duplicate event connections
+if _G.DescendantAddedConnection then
+    _G.DescendantAddedConnection:Disconnect()
 end
 
 -- Execute optimizations
@@ -54,4 +63,4 @@ task.spawn(removeUnwantedObjects)
 task.spawn(disableTerrainDecoration)
 
 -- Handle new objects efficiently
-workspace.DescendantAdded:Connect(handleNewObjects)
+_G.DescendantAddedConnection = workspace.DescendantAdded:Connect(handleNewObjects)
