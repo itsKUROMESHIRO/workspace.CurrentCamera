@@ -7,6 +7,17 @@ local fflags = {
     FIntDebugTextureManagerSkipMips = "8",
     FIntRenderShadowIntensity = "False",
     FFlagDisablePostFx = "True"
+    DFFlagTextureQualityOverrideEnabled = "True"
+    DFFlagDebugRenderForceTechnologyVoxel = "True"
+    FIntRenderLocalLightUpdatesMin = "1"
+    FIntRenderLocalLightUpdatesMax = "1"
+    FIntRenderLocalLightFadeInMs = "0"
+    DFFlagDebugPauseVoxelizer = "True"
+    FIntRenderShadowmapBias = "0"
+    FIntRenderShadowIntensity = "0"
+    FFlagNewLightAttenuation = "True"
+    DFIntTextureCompositorActiveJobs = "0"
+    DFFlagTextureQualityOverrideEnabled = "True"
 }
 
 -- Apply FFlags safely
