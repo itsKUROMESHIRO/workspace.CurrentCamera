@@ -2,76 +2,78 @@ local inputservice = game:GetService("UserInputService")
 
 -- Dictionary of FFlags and their values
 local fflags = {
-    FFlagNewLightAttenuation = "True",
+    DFIntTextureQualityOverride = "True",
+    DFFlagTextureQualityOverrideEnabled = "True",
+    FFlagDebugDisplayFPS = "False",
+    FFlagNewLightAttenuation = "False",
+    FIntTerrainArraySliceSize = "5",
     FFlagDebugSkyGray = "True",
+    DFIntPerformanceControlTextureQualityBestUtility = "-3",
     FIntDebugTextureManagerSkipMips = "8",
+    DFIntDebugFRMQualityLevelOverride = "1",
     FIntRenderShadowIntensity = "False",
     FFlagDisablePostFx = "True"
-    DFFlagTextureQualityOverrideEnabled = "True"
     DFFlagDebugRenderForceTechnologyVoxel = "True"
     FIntRenderLocalLightUpdatesMin = "1"
     FIntRenderLocalLightUpdatesMax = "1"
     FIntRenderLocalLightFadeInMs = "0"
     DFFlagDebugPauseVoxelizer = "True"
     FIntRenderShadowmapBias = "0"
-    FIntRenderShadowIntensity = "0"
-    FFlagNewLightAttenuation = "True"
     DFIntTextureCompositorActiveJobs = "0"
-    DFFlagTextureQualityOverrideEnabled = "True"
 }
 
--- Apply FFlags safely
+-- Apply FFlags
 for flag, value in pairs(fflags) do
-    local fflag = flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
-    value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
+    local fflag = inputservice.KeyboardEnabled and flag or flag:gsub('DFInt', ''):gsub('DFFlag', ''):gsub('FFlag', ''):gsub('FInt', ''):gsub('DFString', ''):gsub('FString', '')
 
-    pcall(function()
-        if getfflag(fflag) ~= nil then
-            setfflag(fflag, value)
-        end
-    end)
+    if value and tostring(value) then
+        value = tostring(value):gsub('"True"', 'true'):gsub('"False"', 'false')
+    end
+    
+    if getfflag(fflag) ~= nil then
+        pcall(setfflag, fflag, tostring(value))
+    end
 end
 
 -- Function to remove unwanted objects
 local function removeUnwantedObjects()
-    local toDestroy = {}
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
-            table.insert(toDestroy, obj)
+        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+            obj:Destroy()
+        elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+            obj:Destroy()
+        elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+            obj:Destroy()
         end
     end
-    for _, obj in ipairs(toDestroy) do
-        pcall(function() obj:Destroy() end)
+end
+
+-- Function to handle new unwanted objects efficiently
+local function handleNewObjects(obj)
+    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+        obj:Destroy()
+    elseif obj:IsA("Part") and obj.Material == Enum.Material.Grass then
+        obj:Destroy()
+    elseif obj:IsA("MeshPart") and obj.Material == Enum.Material.Grass then
+        obj:Destroy()
+    elseif obj:IsA("Decal") and obj.Texture and string.find(obj.Texture:lower(), "grass") then
+        obj:Destroy()
     end
 end
 
--- Disable terrain decoration safely
-local function disableTerrainDecoration()
+-- Function to optimize terrain modification
+local function optimizeTerrain()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
     if terrain then
-        pcall(function()
-            if terrain:FindFirstChild("Decoration") ~= nil then
-                sethiddenproperty(terrain, "Decoration", false)
-            end
-        end)
+        terrain:FillRegion(terrain.MaxExtents, Enum.Material.Grass, Enum.Material.Ground)
     end
 end
 
--- Efficiently handle new objects
-local function handleNewObjects(obj)
-    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
-        pcall(function() obj:Destroy() end)
-    end
-end
-
--- Prevent duplicate event connections
-if _G.DescendantAddedConnection then
-    _G.DescendantAddedConnection:Disconnect()
-end
-
--- Execute optimizations
+-- Execute once to clean up existing objects
 task.spawn(removeUnwantedObjects)
-task.spawn(disableTerrainDecoration)
+task.spawn(optimizeTerrain)
 
--- Handle new objects efficiently
-_G.DescendantAddedConnection = workspace.DescendantAdded:Connect(handleNewObjects)
+-- Single connection to handle new objects efficiently
+workspace.DescendantAdded:Connect(handleNewObjects)
