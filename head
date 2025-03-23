@@ -19,19 +19,6 @@ for flag, value in pairs(fflags) do
     end
 end
 
--- Function to remove unwanted objects
-local function removeUnwantedObjects()
-    local toDestroy = {}
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
-            table.insert(toDestroy, obj)
-        end
-    end
-    for _, obj in ipairs(toDestroy) do
-        obj:Destroy()
-    end
-end
-
 -- Disable terrain decoration
 local function disableTerrainDecoration()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -42,15 +29,7 @@ local function disableTerrainDecoration()
     end
 end
 
--- Efficiently handle new objects
-local function handleNewObjects(obj)
-    if obj:IsA("ParticleEmitter") or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") or obj:IsA("Explosion") then
-        task.defer(obj.Destroy, obj)
-    end
-end
-
 -- Execute optimizations
-task.spawn(removeUnwantedObjects)
 task.spawn(disableTerrainDecoration)
 
 -- Handle new objects efficiently
