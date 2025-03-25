@@ -19,6 +19,29 @@ for flag, value in pairs(fflags) do
     end
 end
 
+-- Function to remove post-processing effects, including Bloom
+local function removePostProcessing()
+    local lighting = game:GetService("Lighting")
+    for _, effect in ipairs(lighting:GetChildren()) do
+        if effect:IsA("BloomEffect") or effect:IsA("BlurEffect") or effect:IsA("SunRaysEffect") 
+        or effect:IsA("ColorCorrectionEffect") or effect:IsA("DepthOfFieldEffect") then
+            effect:Destroy()
+        end
+    end
+end
+
+-- Function to disable shadows, fog, and reflections
+local function disableLightingEffects()
+    local lighting = game:GetService("Lighting")
+    lighting.GlobalShadows = false  -- Disable shadows
+    lighting.FogEnd = 100000         -- Remove fog by setting high FogEnd
+    lighting.FogStart = 99999
+    lighting.FogColor = Color3.new(1, 1, 1)  -- Set fog to white (optional)
+    lighting.Brightness = 2          -- Increase brightness for visibility
+    lighting.EnvironmentSpecularScale = 0  -- Remove reflections
+    lighting.EnvironmentDiffuseScale = 0   -- Remove indirect light effects
+end
+
 -- Disable terrain decoration
 local function disableTerrainDecoration()
     local terrain = workspace:FindFirstChildOfClass("Terrain")
@@ -30,7 +53,16 @@ local function disableTerrainDecoration()
 end
 
 -- Execute optimizations
+task.spawn(removePostProcessing)
+task.spawn(disableLightingEffects)
 task.spawn(disableTerrainDecoration)
 
 -- Handle new objects efficiently
-workspace.DescendantAdded:Connect(handleNewObjects)
+workspace.DescendantAdded:Connect(function(obj)
+    if obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect") 
+    or obj:IsA("ColorCorrectionEffect") or obj:IsA("DepthOfFieldEffect") then
+        task.spawn(function()
+            obj:Destroy()
+        end)
+    end
+end)
