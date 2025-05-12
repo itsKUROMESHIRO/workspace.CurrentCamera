@@ -6,8 +6,27 @@ local fflags = {
     FFlagDebugSkyGray = "True",
     FIntDebugTextureManagerSkipMips = "8",
     FIntRenderShadowIntensity = "False",
-    FFlagDisablePostFx = "True"
+    FFlagDisablePostFx = "True",
+    DFIntTrackCountryRegionAPIHundredthsPercent = "10000",
+    FFlagDebugForceDisableShadows = "True",
+    FFlagDebugDisableRenderingPostEffects = "True",
+    FFlagDebugDisableLightingTechnologyFeatures = "True",
+    FFlagDebugDisableMaterialSpecular = "True",
+    FFlagDebugForceLowGraphics = "True",
+    FFlagDebugDisablePhysicsLOD = "True",
+    FFlagDebugForceDisable3DRendering = "False",
+    FFlagDebugDisableLODFoliage = "True",
+    DFIntLargePacketQueueSizeCutoffMB = "1000",
+    DFIntMaxProcessPacketsJobScaling = "10000",
+    DFIntMaxProcessPacketsStepsAccumulated = "0",
+    DFIntMaxProcessPacketsStepsPerCyclic = "5000",
+    DFIntMegaReplicatorNetworkQualityProcessorUnit = "10",
+    DFIntRakNetClockDriftAdjustmentPerPingMillisecond = "100",
+    DFIntRaknetBandwidthInfluxHundredthsPercentageV2 = "10000",
+    DFIntCodecMaxIncomingPackets = "100",
+    DFIntCodecMaxOutgoingFrames = "10000"
 }
+
 
 -- Apply FFlags
 for flag, value in pairs(fflags) do
