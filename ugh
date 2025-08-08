@@ -121,7 +121,7 @@ function ESP:updateComponents(components, character, player)
 end
 
 function ESP:hideComponents(components)
-    components.Box.Visible = true
+    components.Box.Visible = false
     components.DistanceLabel.Visible = false
     components.NameLabel.Visible = false
     components.HealthBar.Outline.Visible = false
