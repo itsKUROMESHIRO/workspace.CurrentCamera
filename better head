@@ -1,34 +1,185 @@
-_G.HeadSize = 14
-_G.Disabled = false  -- Ensure the script runs
+-- ================= CONFIG =================
+_G.FriendHitboxEnabled = false
+_G.FriendHitboxSize = 14
 
+-- ================= SERVICES =================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 
-local function updateHitboxes()
-    if not _G.Disabled then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                local character = player.Character
-                if character and character:FindFirstChild("Humanoid") and character:FindFirstChild("Head") then
-                    local humanoid = character.Humanoid
-                    local head = character.Head
+-- ================= GUI =================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HitboxGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game:GetService("CoreGui")
 
-                    -- Adjust hitbox size based on sitting state
-                    local newSize = humanoid.Sit and 14 or 18
-                    
-                    -- Prevent unwanted resets
-                    head.Size = Vector3.new(newSize, newSize, newSize)
-                    head.Transparency = 0.51
-                    head.BrickColor = BrickColor.new("Red")
-                    head.Material = Enum.Material.Neon
-                    head.CanCollide = false
-                    head.Massless = true
+local Frame = Instance.new("Frame")
+Frame.Parent = ScreenGui
+Frame.Size = UDim2.fromScale(0.16, 0.11) -- smaller
+Frame.Position = UDim2.fromScale(0.68, 0.18)
+Frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Frame.BackgroundTransparency = 0.18 -- transparent
+Frame.BorderSizePixel = 0
+Frame.Active = true
+
+local UICorner = Instance.new("UICorner", Frame)
+UICorner.CornerRadius = UDim.new(0, 12)
+
+-- TITLE
+local Title = Instance.new("TextLabel")
+Title.Parent = Frame
+Title.Size = UDim2.fromScale(1, 0.28)
+Title.BackgroundTransparency = 1
+Title.Text = "Hitbox Controller"
+Title.Font = Enum.Font.GothamBold
+Title.TextScaled = true
+Title.TextColor3 = Color3.fromRGB(235, 235, 235)
+
+-- TOGGLE BUTTON
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Parent = Frame
+ToggleButton.Size = UDim2.fromScale(0.9, 0.32)
+ToggleButton.Position = UDim2.fromScale(0.05, 0.32)
+ToggleButton.Text = "Friend Hitbox: OFF"
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextScaled = true
+ToggleButton.BackgroundColor3 = Color3.fromRGB(90, 45, 45)
+ToggleButton.BackgroundTransparency = 0.15
+ToggleButton.TextColor3 = Color3.new(1,1,1)
+ToggleButton.BorderSizePixel = 0
+
+local ToggleCorner = Instance.new("UICorner", ToggleButton)
+ToggleCorner.CornerRadius = UDim.new(0, 9)
+
+-- LOCK BUTTON
+local LockButton = Instance.new("TextButton")
+LockButton.Parent = Frame
+LockButton.Size = UDim2.fromScale(0.9, 0.22)
+LockButton.Position = UDim2.fromScale(0.05, 0.7)
+LockButton.Text = "Drag: UNLOCKED"
+LockButton.Font = Enum.Font.Gotham
+LockButton.TextScaled = true
+LockButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+LockButton.BackgroundTransparency = 0.2
+LockButton.TextColor3 = Color3.new(1,1,1)
+LockButton.BorderSizePixel = 0
+
+local LockCorner = Instance.new("UICorner", LockButton)
+LockCorner.CornerRadius = UDim.new(0, 9)
+
+-- ================= DRAG SYSTEM (MOBILE + PC) =================
+local dragging = false
+local dragLocked = false
+local dragStart
+local startPos
+
+local function getPos(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        return input.Position
+    end
+    return UserInputService:GetMouseLocation()
+end
+
+Frame.InputBegan:Connect(function(input)
+    if dragLocked then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = getPos(input)
+        startPos = Frame.Position
+    end
+end)
+
+Frame.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and not dragLocked then
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+            local delta = getPos(input) - dragStart
+            Frame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end
+end)
+
+-- ================= BUTTON LOGIC =================
+ToggleButton.MouseButton1Click:Connect(function()
+    _G.FriendHitboxEnabled = not _G.FriendHitboxEnabled
+
+    if _G.FriendHitboxEnabled then
+        ToggleButton.Text = "Friend Hitbox: ON"
+        ToggleButton.BackgroundColor3 = Color3.fromRGB(45, 110, 65)
+    else
+        ToggleButton.Text = "Friend Hitbox: OFF"
+        ToggleButton.BackgroundColor3 = Color3.fromRGB(90, 45, 45)
+    end
+end)
+
+LockButton.MouseButton1Click:Connect(function()
+    dragLocked = not dragLocked
+
+    if dragLocked then
+        LockButton.Text = "Drag: LOCKED"
+        LockButton.BackgroundColor3 = Color3.fromRGB(110, 55, 55)
+    else
+        LockButton.Text = "Drag: UNLOCKED"
+        LockButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+    end
+end)
+
+-- ================= HITBOX LOGIC =================
+local function isFriend(player)
+    return LocalPlayer:IsFriendsWith(player.UserId)
+end
+
+local function restoreHead(head)
+    head.Size = Vector3.new(2, 1, 1)
+    head.Transparency = 0
+    head.Material = Enum.Material.Plastic
+    head.BrickColor = BrickColor.new("Medium stone grey")
+    head.CanCollide = true
+    head.Massless = false
+end
+
+local function applyHitbox(head, size)
+    head.Size = Vector3.new(size, size, size)
+    head.Transparency = 0.51
+    head.Material = Enum.Material.Neon
+    head.BrickColor = BrickColor.new("Red")
+    head.CanCollide = false
+    head.Massless = true
+end
+
+RunService.Heartbeat:Connect(function()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if not char then continue end
+
+            local head = char:FindFirstChild("Head")
+            local humanoid = char:FindFirstChildOfClass("Humanoid")
+            if not head or not humanoid then continue end
+
+            if isFriend(player) then
+                if _G.FriendHitboxEnabled then
+                    applyHitbox(head, _G.FriendHitboxSize)
+                else
+                    restoreHead(head)
                 end
+            else
+                applyHitbox(head, 18)
             end
         end
     end
-end
-
--- Use Heartbeat for better physics updates
-RunService.Heartbeat:Connect(updateHitboxes)
+end)
