@@ -1407,7 +1407,7 @@ local function addEmote(name, id, price, date)
     })
 end
 
-addEmote("PARROT PARTY DANCE", 121067808279598, 39, "Aug 08, 2025")
+addEmote("MOM CALL TAXI", 73173094158377, 39, "Aug 08, 2025")
 addEmote("Dance n' Prance", 99031916674986, 39, "Aug 08, 2025")
 addEmote("R15 Death (Accurate)", 114899970878842, 39, "Aug 08, 2025")
 addEmote("Wally West", 133948663586698, 39, "Aug 08, 2025")
