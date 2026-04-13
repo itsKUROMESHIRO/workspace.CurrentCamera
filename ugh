@@ -1,4 +1,6 @@
--- ESP Module (Animated Team Glow + Correct Pulse Colors)
+-- ESP Module
+-- Features: Player ESP (Skeleton, Health Bar, Distance) | Submarine ESP
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Camera = workspace.CurrentCamera
@@ -8,176 +10,306 @@ local ESP = {}
 ESP.__index = ESP
 
 function ESP.new()
-    local self = setmetatable({}, ESP)
-    self.espCache = {}
-    return self
+	local self = setmetatable({}, ESP)
+	self.espCache = {}
+	self.submarineCache = {}
+	return self
 end
 
--- Animation Logic for Friends
+function ESP:createDrawing(drawingType, properties)
+	local drawing = Drawing.new(drawingType)
+	for property, value in pairs(properties) do
+		drawing[property] = value
+	end
+	return drawing
+end
+
 local function getAnimatedColor(player)
-    local isFriend = player:IsFriendsWith(LocalPlayer.UserId)
-    local t = tick() 
-    
-    if isFriend then
-        local wave = (math.sin(t * 5) + 1) / 2 -- Smooth wave 0 to 1
-        
-        if player.Team ~= LocalPlayer.Team then
-            -- PURPLE PULSE (Friend on Enemy Team)
-            return Color3.fromRGB(80, 0, 150):Lerp(Color3.fromRGB(255, 0, 255), wave)
-        else
-            -- GREEN PULSE (Friend on Ally Team)
-            -- Pulses between Deep Green and Neon Green
-            return Color3.fromRGB(0, 100, 0):Lerp(Color3.fromRGB(50, 255, 50), wave)
-        end
-    end
-
-    -- Static Team Color for non-friends
-    return player.Team and player.TeamColor.Color or Color3.fromRGB(255, 255, 255)
+	local isFriend = player:IsFriendsWith(LocalPlayer.UserId)
+	local time = tick()
+	
+	if not isFriend then
+		return player.Team and player.TeamColor.Color or Color3.fromRGB(255, 255, 255)
+	end
+	
+	local wave = (math.sin(time * 5) + 1) / 2
+	
+	if player.Team ~= LocalPlayer.Team then
+		return Color3.fromRGB(80, 0, 150):Lerp(Color3.fromRGB(255, 0, 255), wave)
+	end
+	
+	return Color3.fromRGB(0, 100, 0):Lerp(Color3.fromRGB(50, 255, 50), wave)
 end
 
-function ESP:createDrawing(type, properties)
-    local drawing = Drawing.new(type)
-    for prop, val in pairs(properties) do
-        drawing[prop] = val
-    end
-    return drawing
+-- Player ESP Components
+function ESP:createPlayerComponents()
+	local skeletonLines = {}
+	for i = 1, 5 do
+		skeletonLines[i] = self:createDrawing("Line", {
+			Thickness = 1.5,
+			Transparency = 1
+		})
+	end
+
+	return {
+		Skeleton = skeletonLines,
+		NameLabel = self:createDrawing("Text", {
+			Size = 16,
+			Center = true,
+			Outline = true
+		}),
+		DistanceLabel = self:createDrawing("Text", {
+			Size = 16,
+			Center = true,
+			Outline = true
+		}),
+		HealthBar = {
+			Outline = self:createDrawing("Square", {
+				Thickness = 1,
+				Transparency = 1,
+				Color = Color3.new(0, 0, 0),
+				Filled = true
+			}),
+			Health = self:createDrawing("Square", {
+				Thickness = 1,
+				Transparency = 1,
+				Filled = true
+			})
+		}
+	}
 end
 
-function ESP:createComponents()
-    local skeletonLines = {}
-    for i = 1, 6 do
-        skeletonLines[i] = self:createDrawing("Line", { Thickness = 1.5, Transparency = 1 })
-    end
+function ESP:updatePlayerComponents(components, character, player)
+	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChild("Humanoid")
+	local head = character:FindFirstChild("Head")
+	local localHumanoidRootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
-    return {
-        Skeleton = skeletonLines,
-        DistanceLabel = self:createDrawing("Text", { Size = 16, Center = true, Outline = true }),
-        NameLabel = self:createDrawing("Text", { Size = 16, Center = true, Outline = true }),
-        HealthBar = {
-            Outline = self:createDrawing("Square", { Thickness = 1, Transparency = 1, Color = Color3.new(0,0,0), Filled = true }),
-            Health = self:createDrawing("Square", { Thickness = 1, Transparency = 1, Filled = true })
-        }
-    }
+	if not (humanoidRootPart and humanoid and head and localHumanoidRootPart) then
+		self:hidePlayerComponents(components)
+		return
+	end
+
+	local position, onScreen = Camera:WorldToViewportPoint(humanoidRootPart.Position)
+	if not onScreen then
+		self:hidePlayerComponents(components)
+		return
+	end
+
+	local displayColor = getAnimatedColor(player)
+	local distance = (localHumanoidRootPart.Position - humanoidRootPart.Position).Magnitude
+	local scale = 1000 / (position.Z * Camera.FieldOfView)
+	local barHeight = 45 * (scale * 2.5)
+	local barWidth = 3 * (scale * 2.5)
+	local fontSize = math.clamp(25 * scale, 10, 18)
+
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	local leftArm = character:FindFirstChild("LeftUpperArm") or character:FindFirstChild("Left Arm")
+	local rightArm = character:FindFirstChild("RightUpperArm") or character:FindFirstChild("Right Arm")
+	local leftLeg = character:FindFirstChild("LeftUpperLeg") or character:FindFirstChild("Left Leg")
+	local rightLeg = character:FindFirstChild("RightUpperLeg") or character:FindFirstChild("Right Leg")
+
+	local function getScreenPosition(part)
+		if not part then return nil end
+		local partPosition, visible = Camera:WorldToViewportPoint(part.Position)
+		return visible and Vector2.new(partPosition.X, partPosition.Y) or nil
+	end
+
+	local headPosition = getScreenPosition(head)
+	local torsoPosition = getScreenPosition(torso)
+	local leftArmPosition = getScreenPosition(leftArm)
+	local rightArmPosition = getScreenPosition(rightArm)
+	local leftLegPosition = getScreenPosition(leftLeg)
+	local rightLegPosition = getScreenPosition(rightLeg)
+
+	local lines = components.Skeleton
+	local function connectLine(line, pointA, pointB)
+		if pointA and pointB then
+			line.From = pointA
+			line.To = pointB
+			line.Color = displayColor
+			line.Visible = true
+			line.Thickness = 2 * (scale * 2)
+		else
+			line.Visible = false
+		end
+	end
+
+	connectLine(lines[1], headPosition, torsoPosition)
+	connectLine(lines[2], torsoPosition, leftArmPosition)
+	connectLine(lines[3], torsoPosition, rightArmPosition)
+	connectLine(lines[4], torsoPosition, leftLegPosition)
+	connectLine(lines[5], torsoPosition, rightLegPosition)
+
+	components.NameLabel.Visible = true
+	components.NameLabel.Text = player.Name
+	components.NameLabel.Size = fontSize
+	components.NameLabel.Position = Vector2.new(position.X, position.Y - (barHeight / 1.5) - fontSize)
+	components.NameLabel.Color = displayColor
+
+	components.DistanceLabel.Visible = true
+	components.DistanceLabel.Text = math.floor(distance) .. " studs"
+	components.DistanceLabel.Size = fontSize - 2
+	components.DistanceLabel.Position = Vector2.new(position.X, position.Y + (barHeight / 1.5))
+	components.DistanceLabel.Color = Color3.new(1, 1, 1)
+
+	local healthPercent = humanoid.Health / humanoid.MaxHealth
+	local xOffset = 30 * scale
+
+	components.HealthBar.Outline.Visible = true
+	components.HealthBar.Outline.Size = Vector2.new(barWidth + 2, barHeight + 2)
+	components.HealthBar.Outline.Position = Vector2.new(position.X - xOffset - 1, position.Y - (barHeight / 2) - 1)
+
+	components.HealthBar.Health.Visible = true
+	components.HealthBar.Health.Size = Vector2.new(barWidth, barHeight * healthPercent)
+	components.HealthBar.Health.Position = Vector2.new(position.X - xOffset, position.Y - (barHeight / 2) + (barHeight * (1 - healthPercent)))
+	components.HealthBar.Health.Color = Color3.fromHSV(healthPercent * 0.3, 1, 1)
 end
 
-function ESP:updateComponents(components, character, player)
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    local hum = character:FindFirstChild("Humanoid")
-    local head = character:FindFirstChild("Head")
-    local localHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-
-    if hrp and hum and head and localHrp then
-        local hrpPos, onScreen = Camera:WorldToViewportPoint(hrp.Position)
-
-        if onScreen then
-            local displayColor = getAnimatedColor(player)
-            local distance = (localHrp.Position - hrp.Position).Magnitude
-            
-            -- Perspective Scaling (Fixed for far away)
-            local scale = 1000 / (hrpPos.Z * Camera.FieldOfView)
-            local barHeight = 45 * (scale * 2.5) 
-            local barWidth = 3 * (scale * 2.5)
-            local fontSize = math.clamp(25 * scale, 10, 18)
-
-            -- Skeleton Setup
-            local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-            local leftArm = character:FindFirstChild("LeftUpperArm") or character:FindFirstChild("Left Arm")
-            local rightArm = character:FindFirstChild("RightUpperArm") or character:FindFirstChild("Right Arm")
-            local leftLeg = character:FindFirstChild("LeftUpperLeg") or character:FindFirstChild("Left Leg")
-            local rightLeg = character:FindFirstChild("RightUpperLeg") or character:FindFirstChild("Right Leg")
-
-            local function getPos(part)
-                if not part then return nil end
-                local pos, visible = Camera:WorldToViewportPoint(part.Position)
-                return visible and Vector2.new(pos.X, pos.Y) or nil
-            end
-
-            local headP, torsoP = getPos(head), getPos(torso)
-            local lArmP, rArmP = getPos(leftArm), getPos(rightArm)
-            local lLegP, rLegP = getPos(leftLeg), getPos(rightLeg)
-
-            local lines = components.Skeleton
-            local function connect(line, p1, p2)
-                if p1 and p2 then
-                    line.From, line.To, line.Color, line.Visible, line.Thickness = p1, p2, displayColor, true, 2 * (scale * 2)
-                else line.Visible = false end
-            end
-
-            connect(lines[1], headP, torsoP)
-            connect(lines[2], torsoP, lArmP)
-            connect(lines[3], torsoP, rArmP)
-            connect(lines[4], torsoP, lLegP)
-            connect(lines[5], torsoP, rLegP)
-
-            -- Labels
-            components.NameLabel.Visible = true
-            components.NameLabel.Text = player.Name
-            components.NameLabel.Size = fontSize
-            components.NameLabel.Position = Vector2.new(hrpPos.X, hrpPos.Y - (barHeight/1.5) - fontSize)
-            components.NameLabel.Color = displayColor
-
-            components.DistanceLabel.Visible = true
-            components.DistanceLabel.Text = math.floor(distance) .. " studs"
-            components.DistanceLabel.Size = fontSize - 2
-            components.DistanceLabel.Position = Vector2.new(hrpPos.X, hrpPos.Y + (barHeight/1.5))
-            components.DistanceLabel.Color = Color3.new(1, 1, 1)
-
-            -- Aggressive Health Bar Scaling
-            local healthPercent = hum.Health / hum.MaxHealth
-            local xOffset = 30 * scale 
-            
-            components.HealthBar.Outline.Visible = true
-            components.HealthBar.Outline.Size = Vector2.new(barWidth + 2, barHeight + 2)
-            components.HealthBar.Outline.Position = Vector2.new(hrpPos.X - xOffset - 1, hrpPos.Y - (barHeight / 2) - 1)
-            components.HealthBar.Outline.Color = Color3.new(0,0,0)
-
-            components.HealthBar.Health.Visible = true
-            components.HealthBar.Health.Size = Vector2.new(barWidth, barHeight * healthPercent)
-            components.HealthBar.Health.Position = Vector2.new(hrpPos.X - xOffset, hrpPos.Y - (barHeight / 2) + (barHeight * (1 - healthPercent)))
-            components.HealthBar.Health.Color = Color3.fromHSV(healthPercent * 0.3, 1, 1)
-        else
-            self:hideComponents(components)
-        end
-    else
-        self:hideComponents(components)
-    end
+function ESP:hidePlayerComponents(components)
+	for _, line in ipairs(components.Skeleton) do
+		line.Visible = false
+	end
+	components.NameLabel.Visible = false
+	components.DistanceLabel.Visible = false
+	components.HealthBar.Outline.Visible = false
+	components.HealthBar.Health.Visible = false
 end
 
-function ESP:hideComponents(components)
-    for _, line in ipairs(components.Skeleton) do line.Visible = false end
-    components.NameLabel.Visible = false
-    components.DistanceLabel.Visible = false
-    components.HealthBar.Outline.Visible = false
-    components.HealthBar.Health.Visible = false
+function ESP:removePlayerEsp(player)
+	local components = self.espCache[player]
+	if not components then return end
+
+	for _, line in ipairs(components.Skeleton) do
+		line:Remove()
+	end
+	components.NameLabel:Remove()
+	components.DistanceLabel:Remove()
+	components.HealthBar.Outline:Remove()
+	components.HealthBar.Health:Remove()
+	self.espCache[player] = nil
 end
 
-function ESP:removeEsp(player)
-    local components = self.espCache[player]
-    if components then
-        for _, line in ipairs(components.Skeleton) do line:Remove() end
-        components.NameLabel:Remove()
-        components.DistanceLabel:Remove()
-        components.HealthBar.Outline:Remove()
-        components.HealthBar.Health:Remove()
-        self.espCache[player] = nil
-    end
+-- Submarine ESP Components
+function ESP:createSubmarineComponents()
+	return {
+		NameLabel = self:createDrawing("Text", {
+			Size = 16,
+			Center = true,
+			Outline = true
+		}),
+		DistanceLabel = self:createDrawing("Text", {
+			Size = 14,
+			Center = true,
+			Outline = true
+		})
+	}
 end
 
+function ESP:removeSubmarineEsp(submarine)
+	local components = self.submarineCache[submarine]
+	if not components then return end
+
+	components.NameLabel:Remove()
+	components.DistanceLabel:Remove()
+	self.submarineCache[submarine] = nil
+end
+
+function ESP:updateSubmarineComponents(components, submarine)
+	if not submarine or not submarine.Parent then
+		components.NameLabel.Visible = false
+		components.DistanceLabel.Visible = false
+		return
+	end
+
+	local primaryPart = submarine.PrimaryPart or submarine:FindFirstChildWhichIsA("BasePart")
+	local localHumanoidRootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+	if not (primaryPart and localHumanoidRootPart) then
+		components.NameLabel.Visible = false
+		components.DistanceLabel.Visible = false
+		return
+	end
+
+	local position, visible = Camera:WorldToViewportPoint(primaryPart.Position)
+	if not visible then
+		components.NameLabel.Visible = false
+		components.DistanceLabel.Visible = false
+		return
+	end
+
+	local distance = (localHumanoidRootPart.Position - primaryPart.Position).Magnitude
+	local time = tick()
+	local wave = (math.sin(time * 5) + 1) / 2
+	local color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
+
+	local owner = submarine:FindFirstChild("Owner") or submarine:FindFirstChild("Player")
+	if owner and owner.Value and owner.Value:IsA("Player") then
+		local ownerPlayer = owner.Value
+
+		if ownerPlayer:IsFriendsWith(LocalPlayer.UserId) then
+			if ownerPlayer.Team == LocalPlayer.Team then
+				color = Color3.fromRGB(0, 255, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
+			else
+				color = Color3.fromRGB(170, 0, 255):Lerp(Color3.fromRGB(0, 0, 0), wave)
+			end
+		else
+			color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
+		end
+	end
+
+	components.NameLabel.Visible = true
+	components.NameLabel.Text = "[Submarine]"
+	components.NameLabel.Position = Vector2.new(position.X, position.Y)
+	components.NameLabel.Color = color
+
+	components.DistanceLabel.Visible = true
+	components.DistanceLabel.Text = math.floor(distance) .. " studs"
+	components.DistanceLabel.Position = Vector2.new(position.X, position.Y + 15)
+	components.DistanceLabel.Color = Color3.new(1, 1, 1)
+end
+
+-- Main
 local espInstance = ESP.new()
 
 RunService.RenderStepped:Connect(function()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            if player.Character then
-                if not espInstance.espCache[player] then
-                    espInstance.espCache[player] = espInstance:createComponents()
-                end
-                espInstance:updateComponents(espInstance.espCache[player], player.Character, player)
-            elseif espInstance.espCache[player] then
-                espInstance:hideComponents(espInstance.espCache[player])
-            end
-        end
-    end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player == LocalPlayer then continue end
+
+		if player.Character then
+			if not espInstance.espCache[player] then
+				espInstance.espCache[player] = espInstance:createPlayerComponents()
+			end
+			espInstance:updatePlayerComponents(espInstance.espCache[player], player.Character, player)
+		elseif espInstance.espCache[player] then
+			espInstance:hidePlayerComponents(espInstance.espCache[player])
+		end
+	end
+
+	local gameSystems = workspace:FindFirstChild("Game Systems")
+	local activeSubmarines = {}
+
+	if gameSystems then
+		local submarineWorkspace = gameSystems:FindFirstChild("Submarine Workspace")
+		if submarineWorkspace then
+			for _, submarine in ipairs(submarineWorkspace:GetChildren()) do
+				activeSubmarines[submarine] = true
+
+				if not espInstance.submarineCache[submarine] then
+					espInstance.submarineCache[submarine] = espInstance:createSubmarineComponents()
+				end
+				espInstance:updateSubmarineComponents(espInstance.submarineCache[submarine], submarine)
+			end
+		end
+	end
+
+	for submarine, components in pairs(espInstance.submarineCache) do
+		if not activeSubmarines[submarine] or not submarine.Parent then
+			espInstance:removeSubmarineEsp(submarine)
+		end
+	end
 end)
 
-Players.PlayerRemoving:Connect(function(p) espInstance:removeEsp(p) end)
+Players.PlayerRemoving:Connect(function(player)
+	espInstance:removePlayerEsp(player)
+end)
