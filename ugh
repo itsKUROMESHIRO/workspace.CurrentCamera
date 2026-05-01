@@ -1,5 +1,6 @@
 -- ESP Module
 -- Features: Player ESP (Skeleton, Health Bar, Distance) | Submarine ESP
+-- Optimized: Spatial culling, object pooling, lazy updates, batch rendering, extreme range LOD
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -9,307 +10,661 @@ local LocalPlayer = Players.LocalPlayer
 local ESP = {}
 ESP.__index = ESP
 
+-- Pre-allocated constants & locals
+local V2new = Vector2.new
+local V3new = Vector3.new
+local C3new = Color3.new
+local C3RGB = Color3.fromRGB
+local C3HSV = Color3.fromHSV
+local clamp = math.clamp
+local floor = math.floor
+local sin = math.sin
+local cos = math.cos
+local abs = math.abs
+local tick = tick
+local ipairs = ipairs
+local pairs = pairs
+local type = type
+local rawset = rawset
+local rawget = rawget
+
+-- Tunables -- ADJUSTED FOR EXTREME RANGE
+local MAX_DISTANCE = 15000          -- Was 2000, now 15000 studs (massive range)
+local SKELETON_MAX_DIST = 800       -- Skeleton only within 800 studs
+local HEALTH_MAX_DIST = 1200        -- Health bar only within 1200 studs
+local FULL_UPDATE_INTERVAL = 0.05   -- Full update every 50ms
+local FAR_UPDATE_INTERVAL = 0.15    -- Distant targets every 150ms (cheaper)
+local SKELETON_UPDATE_INTERVAL = 0.08
+local POOL_SIZE = 100               -- Increased pool for more objects
+
+-- Skeleton topology (static, never changes)
+local SKELETON_BONES = {
+	{0, 1}, -- Head -> Torso
+	{1, 2}, {1, 3}, -- Torso -> Arms
+	{1, 4}, {1, 5}  -- Torso -> Legs
+}
+local BONE_MAP = {"Head", "UpperTorso", "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg"}
+local BONE_FALLBACKS = {
+	UpperTorso = "Torso",
+	LeftUpperArm = "Left Arm",
+	RightUpperArm = "Right Arm",
+	LeftUpperLeg = "Left Leg",
+	RightUpperLeg = "Right Leg"
+}
+
+-- Drawing object pool
+local DrawingPool = {
+	lines = {},
+	texts = {},
+	squares = {}
+}
+
+local function acquireDrawing(drawingType, pool, creator)
+	local stack = pool[drawingType]
+	if stack and #stack > 0 then
+		local obj = stack[#stack]
+		stack[#stack] = nil
+		obj.Visible = true
+		return obj
+	end
+	return creator()
+end
+
+local function releaseDrawing(drawingType, pool, obj)
+	local stack = pool[drawingType]
+	if not stack then
+		stack = {}
+		pool[drawingType] = stack
+	end
+	obj.Visible = false
+	if #stack < POOL_SIZE then
+		stack[#stack + 1] = obj
+	else
+		obj:Remove()
+	end
+end
+
 function ESP.new()
-	local self = setmetatable({}, ESP)
-	self.espCache = {}
-	self.submarineCache = {}
+	local self = setmetatable({
+		espCache = {},
+		submarineCache = {},
+		_camera = Camera,
+		_localPlayer = LocalPlayer,
+		_players = Players,
+		_lastUpdate = 0,
+		_lastSkeletonUpdate = 0,
+		_frameCount = 0,
+		_pool = DrawingPool
+	}, ESP)
+	
+	-- Pre-allocate common colors
+	self._colorWhite = C3new(1, 1, 1)
+	self._colorBlack = C3new(0, 0, 0)
+	self._colorRed = C3RGB(255, 0, 0)
+	self._colorGreen = C3RGB(0, 255, 0)
+	self._colorPurple = C3RGB(170, 0, 255)
+	self._colorDarkPurple = C3RGB(80, 0, 150)
+	self._colorBrightPurple = C3RGB(255, 0, 255)
+	self._colorDarkGreen = C3RGB(0, 100, 0)
+	self._colorBrightGreen = C3RGB(50, 255, 50)
+	
 	return self
 end
 
-function ESP:createDrawing(drawingType, properties)
+function ESP:_createDrawing(drawingType, props)
 	local drawing = Drawing.new(drawingType)
-	for property, value in pairs(properties) do
-		drawing[property] = value
+	for k, v in pairs(props) do
+		drawing[k] = v
 	end
 	return drawing
 end
 
-local function getAnimatedColor(player)
-	local isFriend = player:IsFriendsWith(LocalPlayer.UserId)
-	local time = tick()
-	
+-- Fast animated color with cached time
+function ESP:_getAnimatedColor(player, time)
+	local isFriend = player:IsFriendsWith(self._localPlayer.UserId)
 	if not isFriend then
-		return player.Team and player.TeamColor.Color or Color3.fromRGB(255, 255, 255)
+		return player.Team and player.TeamColor.Color or self._colorWhite
 	end
 	
-	local wave = (math.sin(time * 5) + 1) / 2
-	
-	if player.Team ~= LocalPlayer.Team then
-		return Color3.fromRGB(80, 0, 150):Lerp(Color3.fromRGB(255, 0, 255), wave)
+	local wave = (sin(time * 5) + 1) / 2
+	if player.Team ~= self._localPlayer.Team then
+		return self._colorDarkPurple:Lerp(self._colorBrightPurple, wave)
 	end
-	
-	return Color3.fromRGB(0, 100, 0):Lerp(Color3.fromRGB(50, 255, 50), wave)
+	return self._colorDarkGreen:Lerp(self._colorBrightGreen, wave)
 end
 
--- Player ESP Components
-function ESP:createPlayerComponents()
+-- Player Components with pooled drawing objects
+function ESP:_createPlayerComponents()
 	local skeletonLines = {}
 	for i = 1, 5 do
-		skeletonLines[i] = self:createDrawing("Line", {
-			Thickness = 1.5,
-			Transparency = 1
-		})
+		skeletonLines[i] = acquireDrawing("Line", self._pool.lines, function()
+			return self:_createDrawing("Line", {Thickness = 1.5, Transparency = 1})
+		end)
 	end
-
 	return {
 		Skeleton = skeletonLines,
-		NameLabel = self:createDrawing("Text", {
-			Size = 16,
-			Center = true,
-			Outline = true
-		}),
-		DistanceLabel = self:createDrawing("Text", {
-			Size = 16,
-			Center = true,
-			Outline = true
-		}),
+		NameLabel = acquireDrawing("Text", self._pool.texts, function()
+			return self:_createDrawing("Text", {Size = 16, Center = true, Outline = true})
+		end),
+		DistanceLabel = acquireDrawing("Text", self._pool.texts, function()
+			return self:_createDrawing("Text", {Size = 16, Center = true, Outline = true})
+		end),
 		HealthBar = {
-			Outline = self:createDrawing("Square", {
-				Thickness = 1,
-				Transparency = 1,
-				Color = Color3.new(0, 0, 0),
-				Filled = true
-			}),
-			Health = self:createDrawing("Square", {
-				Thickness = 1,
-				Transparency = 1,
-				Filled = true
-			})
-		}
+			Outline = acquireDrawing("Square", self._pool.squares, function()
+				return self:_createDrawing("Square", {Thickness = 1, Transparency = 1, Color = self._colorBlack, Filled = true})
+			end),
+			Health = acquireDrawing("Square", self._pool.squares, function()
+				return self:_createDrawing("Square", {Thickness = 1, Transparency = 1, Filled = true})
+			end)
+		},
+		-- Cached state
+		_lastPos = V3new(0, 0, 0),
+		_lastHealth = -1,
+		_cachedParts = nil,
+		_cachedName = nil,
+		_distance = math.huge,
+		_lastFarUpdate = 0
 	}
 end
 
-function ESP:updatePlayerComponents(components, character, player)
-	local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChild("Humanoid")
-	local head = character:FindFirstChild("Head")
-	local localHumanoidRootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-
-	if not (humanoidRootPart and humanoid and head and localHumanoidRootPart) then
-		self:hidePlayerComponents(components)
-		return
+function ESP:_hidePlayerComponents(comp, keepName)
+	for _, line in ipairs(comp.Skeleton) do line.Visible = false end
+	comp.DistanceLabel.Visible = false
+	if not keepName then
+		comp.NameLabel.Visible = false
 	end
-
-	local position, onScreen = Camera:WorldToViewportPoint(humanoidRootPart.Position)
-	if not onScreen then
-		self:hidePlayerComponents(components)
-		return
-	end
-
-	local displayColor = getAnimatedColor(player)
-	local distance = (localHumanoidRootPart.Position - humanoidRootPart.Position).Magnitude
-	local scale = 1000 / (position.Z * Camera.FieldOfView)
-	local barHeight = 45 * (scale * 2.5)
-	local barWidth = 3 * (scale * 2.5)
-	local fontSize = math.clamp(25 * scale, 10, 18)
-
-	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-	local leftArm = character:FindFirstChild("LeftUpperArm") or character:FindFirstChild("Left Arm")
-	local rightArm = character:FindFirstChild("RightUpperArm") or character:FindFirstChild("Right Arm")
-	local leftLeg = character:FindFirstChild("LeftUpperLeg") or character:FindFirstChild("Left Leg")
-	local rightLeg = character:FindFirstChild("RightUpperLeg") or character:FindFirstChild("Right Leg")
-
-	local function getScreenPosition(part)
-		if not part then return nil end
-		local partPosition, visible = Camera:WorldToViewportPoint(part.Position)
-		return visible and Vector2.new(partPosition.X, partPosition.Y) or nil
-	end
-
-	local headPosition = getScreenPosition(head)
-	local torsoPosition = getScreenPosition(torso)
-	local leftArmPosition = getScreenPosition(leftArm)
-	local rightArmPosition = getScreenPosition(rightArm)
-	local leftLegPosition = getScreenPosition(leftLeg)
-	local rightLegPosition = getScreenPosition(rightLeg)
-
-	local lines = components.Skeleton
-	local function connectLine(line, pointA, pointB)
-		if pointA and pointB then
-			line.From = pointA
-			line.To = pointB
-			line.Color = displayColor
-			line.Visible = true
-			line.Thickness = 2 * (scale * 2)
-		else
-			line.Visible = false
-		end
-	end
-
-	connectLine(lines[1], headPosition, torsoPosition)
-	connectLine(lines[2], torsoPosition, leftArmPosition)
-	connectLine(lines[3], torsoPosition, rightArmPosition)
-	connectLine(lines[4], torsoPosition, leftLegPosition)
-	connectLine(lines[5], torsoPosition, rightLegPosition)
-
-	components.NameLabel.Visible = true
-	components.NameLabel.Text = player.Name
-	components.NameLabel.Size = fontSize
-	components.NameLabel.Position = Vector2.new(position.X, position.Y - (barHeight / 1.5) - fontSize)
-	components.NameLabel.Color = displayColor
-
-	components.DistanceLabel.Visible = true
-	components.DistanceLabel.Text = math.floor(distance) .. " studs"
-	components.DistanceLabel.Size = fontSize - 2
-	components.DistanceLabel.Position = Vector2.new(position.X, position.Y + (barHeight / 1.5))
-	components.DistanceLabel.Color = Color3.new(1, 1, 1)
-
-	local healthPercent = humanoid.Health / humanoid.MaxHealth
-	local xOffset = 30 * scale
-
-	components.HealthBar.Outline.Visible = true
-	components.HealthBar.Outline.Size = Vector2.new(barWidth + 2, barHeight + 2)
-	components.HealthBar.Outline.Position = Vector2.new(position.X - xOffset - 1, position.Y - (barHeight / 2) - 1)
-
-	components.HealthBar.Health.Visible = true
-	components.HealthBar.Health.Size = Vector2.new(barWidth, barHeight * healthPercent)
-	components.HealthBar.Health.Position = Vector2.new(position.X - xOffset, position.Y - (barHeight / 2) + (barHeight * (1 - healthPercent)))
-	components.HealthBar.Health.Color = Color3.fromHSV(healthPercent * 0.3, 1, 1)
+	comp.HealthBar.Outline.Visible = false
+	comp.HealthBar.Health.Visible = false
 end
 
-function ESP:hidePlayerComponents(components)
-	for _, line in ipairs(components.Skeleton) do
-		line.Visible = false
+function ESP:_removePlayerEsp(player)
+	local comp = self.espCache[player]
+	if not comp then return end
+	
+	for _, line in ipairs(comp.Skeleton) do
+		releaseDrawing("Line", self._pool.lines, line)
 	end
-	components.NameLabel.Visible = false
-	components.DistanceLabel.Visible = false
-	components.HealthBar.Outline.Visible = false
-	components.HealthBar.Health.Visible = false
-end
-
-function ESP:removePlayerEsp(player)
-	local components = self.espCache[player]
-	if not components then return end
-
-	for _, line in ipairs(components.Skeleton) do
-		line:Remove()
-	end
-	components.NameLabel:Remove()
-	components.DistanceLabel:Remove()
-	components.HealthBar.Outline:Remove()
-	components.HealthBar.Health:Remove()
+	releaseDrawing("Text", self._pool.texts, comp.NameLabel)
+	releaseDrawing("Text", self._pool.texts, comp.DistanceLabel)
+	releaseDrawing("Square", self._pool.squares, comp.HealthBar.Outline)
+	releaseDrawing("Square", self._pool.squares, comp.HealthBar.Health)
+	
 	self.espCache[player] = nil
 end
 
--- Submarine ESP Components
-function ESP:createSubmarineComponents()
+-- Aggressive part caching with invalidation
+function ESP:_getCharacterParts(character, comp)
+	if comp._cachedParts and comp._cachedParts._model == character then
+		return comp._cachedParts
+	end
+	
+	local parts = {_model = character}
+	for i, name in ipairs(BONE_MAP) do
+		parts[i] = character:FindFirstChild(name) or character:FindFirstChild(BONE_FALLBACKS[name])
+	end
+	comp._cachedParts = parts
+	return parts
+end
+
+-- LOD tiers based on distance
+function ESP:_updatePlayerComponents(comp, character, player, now, doSkeleton, doFull)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChild("Humanoid")
+	local head = character:FindFirstChild("Head")
+	local localChar = self._localPlayer.Character
+	local localHRP = localChar and localChar:FindFirstChild("HumanoidRootPart")
+	
+	if not (hrp and humanoid and head and localHRP) then
+		self:_hidePlayerComponents(comp)
+		return
+	end
+	
+	-- Distance-based culling
+	local dist = (localHRP.Position - hrp.Position).Magnitude
+	comp._distance = dist
+	
+	if dist > MAX_DISTANCE then
+		self:_hidePlayerComponents(comp)
+		return
+	end
+	
+	local pos, onScreen = self._camera:WorldToViewportPoint(hrp.Position)
+	if not onScreen then
+		self:_hidePlayerComponents(comp)
+		return
+	end
+	
+	-- Scale calculations (done once)
+	local scale = 1000 / (pos.Z * self._camera.FieldOfView)
+	local scaleMul = scale * 2.5
+	local barHeight = 45 * scaleMul
+	local barWidth = 3 * scaleMul
+	local fontSize = clamp(25 * scale, 10, 18)
+	local halfBar = barHeight * 0.5
+	local baseX, baseY = pos.X, pos.Y
+	
+	-- Color (cached per frame via time bucket)
+	local displayColor = self:_getAnimatedColor(player, now)
+	
+	-- TIER 1: Extreme distance (3000-15000) - Name + Distance only, tiny text
+	if dist > 3000 then
+		-- Hide expensive components
+		for _, line in ipairs(comp.Skeleton) do line.Visible = false end
+		comp.HealthBar.Outline.Visible = false
+		comp.HealthBar.Health.Visible = false
+		
+		local nameLabel = comp.NameLabel
+		if not comp._cachedName or comp._cachedName ~= player.Name then
+			comp._cachedName = player.Name
+			nameLabel.Text = player.Name
+		end
+		nameLabel.Size = clamp(fontSize * 0.6, 8, 12)
+		nameLabel.Position = V2new(baseX, baseY)
+		nameLabel.Color = displayColor
+		nameLabel.Visible = true
+		
+		local distLabel = comp.DistanceLabel
+		distLabel.Text = floor(dist) .. "m"
+		distLabel.Size = clamp(fontSize * 0.5, 7, 10)
+		distLabel.Position = V2new(baseX, baseY + 10)
+		distLabel.Color = self._colorWhite
+		distLabel.Visible = true
+		
+		return
+	end
+	
+	-- TIER 2: Far distance (1200-3000) - Name + Distance + Health outline (no fill)
+	if dist > HEALTH_MAX_DIST then
+		for _, line in ipairs(comp.Skeleton) do line.Visible = false end
+		comp.HealthBar.Health.Visible = false
+		
+		local nameLabel = comp.NameLabel
+		if not comp._cachedName or comp._cachedName ~= player.Name then
+			comp._cachedName = player.Name
+			nameLabel.Text = player.Name
+		end
+		nameLabel.Size = fontSize
+		nameLabel.Position = V2new(baseX, baseY - halfBar / 1.5 - fontSize)
+		nameLabel.Color = displayColor
+		nameLabel.Visible = true
+		
+		local distLabel = comp.DistanceLabel
+		distLabel.Text = floor(dist) .. " studs"
+		distLabel.Size = fontSize - 2
+		distLabel.Position = V2new(baseX, baseY + halfBar / 1.5)
+		distLabel.Color = self._colorWhite
+		distLabel.Visible = true
+		
+		-- Health outline only (cheap indicator)
+		local xOffset = 30 * scale
+		local outline = comp.HealthBar.Outline
+		outline.Size = V2new(barWidth + 2, barHeight + 2)
+		outline.Position = V2new(baseX - xOffset - 1, baseY - halfBar - 1)
+		outline.Visible = true
+		
+		return
+	end
+	
+	-- TIER 3: Medium distance (800-1200) - Full ESP, no skeleton
+	if dist > SKELETON_MAX_DIST then
+		for _, line in ipairs(comp.Skeleton) do line.Visible = false end
+		
+		local nameLabel = comp.NameLabel
+		if not comp._cachedName or comp._cachedName ~= player.Name then
+			comp._cachedName = player.Name
+			nameLabel.Text = player.Name
+		end
+		nameLabel.Size = fontSize
+		nameLabel.Position = V2new(baseX, baseY - halfBar / 1.5 - fontSize)
+		nameLabel.Color = displayColor
+		nameLabel.Visible = true
+		
+		local distLabel = comp.DistanceLabel
+		distLabel.Text = floor(dist) .. " studs"
+		distLabel.Size = fontSize - 2
+		distLabel.Position = V2new(baseX, baseY + halfBar / 1.5)
+		distLabel.Color = self._colorWhite
+		distLabel.Visible = true
+		
+		-- Full health bar
+		local healthPercent = humanoid.Health / humanoid.MaxHealth
+		local healthChanged = abs(comp._lastHealth - healthPercent) > 0.01
+		
+		if doFull or healthChanged then
+			comp._lastHealth = healthPercent
+			local xOffset = 30 * scale
+			local barX = baseX - xOffset
+			local barY = baseY - halfBar
+			
+			local outline = comp.HealthBar.Outline
+			outline.Size = V2new(barWidth + 2, barHeight + 2)
+			outline.Position = V2new(barX - 1, barY - 1)
+			outline.Visible = true
+			
+			local healthBar = comp.HealthBar.Health
+			healthBar.Size = V2new(barWidth, barHeight * healthPercent)
+			healthBar.Position = V2new(barX, barY + barHeight * (1 - healthPercent))
+			healthBar.Color = C3HSV(healthPercent * 0.3, 1, 1)
+			healthBar.Visible = true
+		end
+		
+		return
+	end
+	
+	-- TIER 4: Close range (0-800) - Full ESP with skeleton
+	if doSkeleton then
+		local parts = self:_getCharacterParts(character, comp)
+		local cam = self._camera
+		
+		local function getScreenPosition(part)
+			if not part then return nil end
+			local p, vis = cam:WorldToViewportPoint(part.Position)
+			return vis and V2new(p.X, p.Y) or nil
+		end
+		
+		local points = {
+			getScreenPosition(parts[1]),
+			getScreenPosition(parts[2]),
+			getScreenPosition(parts[3]),
+			getScreenPosition(parts[4]),
+			getScreenPosition(parts[5]),
+			getScreenPosition(parts[6])
+		}
+		
+		local lines = comp.Skeleton
+		local lineThickness = 2 * (scale * 2)
+		
+		for i, bone in ipairs(SKELETON_BONES) do
+			local a, b = points[bone[1] + 1], points[bone[2] + 1]
+			local line = lines[i]
+			if a and b then
+				line.From = a
+				line.To = b
+				line.Color = displayColor
+				line.Thickness = lineThickness
+				line.Visible = true
+			else
+				line.Visible = false
+			end
+		end
+	else
+		for _, line in ipairs(comp.Skeleton) do
+			line.Visible = false
+		end
+	end
+	
+	-- Standard close-range labels
+	local nameLabel = comp.NameLabel
+	if not comp._cachedName or comp._cachedName ~= player.Name then
+		comp._cachedName = player.Name
+		nameLabel.Text = player.Name
+	end
+	nameLabel.Size = fontSize
+	nameLabel.Position = V2new(baseX, baseY - halfBar / 1.5 - fontSize)
+	nameLabel.Color = displayColor
+	nameLabel.Visible = true
+	
+	local distLabel = comp.DistanceLabel
+	distLabel.Text = floor(dist) .. " studs"
+	distLabel.Size = fontSize - 2
+	distLabel.Position = V2new(baseX, baseY + halfBar / 1.5)
+	distLabel.Color = self._colorWhite
+	distLabel.Visible = true
+	
+	-- Health bar
+	local healthPercent = humanoid.Health / humanoid.MaxHealth
+	local healthChanged = abs(comp._lastHealth - healthPercent) > 0.01
+	
+	if doFull or healthChanged then
+		comp._lastHealth = healthPercent
+		local xOffset = 30 * scale
+		local barX = baseX - xOffset
+		local barY = baseY - halfBar
+		
+		local outline = comp.HealthBar.Outline
+		outline.Size = V2new(barWidth + 2, barHeight + 2)
+		outline.Position = V2new(barX - 1, barY - 1)
+		outline.Visible = true
+		
+		local healthBar = comp.HealthBar.Health
+		healthBar.Size = V2new(barWidth, barHeight * healthPercent)
+		healthBar.Position = V2new(barX, barY + barHeight * (1 - healthPercent))
+		healthBar.Color = C3HSV(healthPercent * 0.3, 1, 1)
+		healthBar.Visible = true
+	end
+end
+
+-- Submarine Components
+function ESP:_createSubmarineComponents()
 	return {
-		NameLabel = self:createDrawing("Text", {
-			Size = 16,
-			Center = true,
-			Outline = true
-		}),
-		DistanceLabel = self:createDrawing("Text", {
-			Size = 14,
-			Center = true,
-			Outline = true
-		})
+		NameLabel = acquireDrawing("Text", self._pool.texts, function()
+			return self:_createDrawing("Text", {Size = 16, Center = true, Outline = true})
+		end),
+		DistanceLabel = acquireDrawing("Text", self._pool.texts, function()
+			return self:_createDrawing("Text", {Size = 14, Center = true, Outline = true})
+		end),
+		_subName = nil,
+		_lastOwner = nil,
+		_distance = math.huge
 	}
 end
 
-function ESP:removeSubmarineEsp(submarine)
-	local components = self.submarineCache[submarine]
-	if not components then return end
-
-	components.NameLabel:Remove()
-	components.DistanceLabel:Remove()
+function ESP:_removeSubmarineEsp(submarine)
+	local comp = self.submarineCache[submarine]
+	if not comp then return end
+	releaseDrawing("Text", self._pool.texts, comp.NameLabel)
+	releaseDrawing("Text", self._pool.texts, comp.DistanceLabel)
 	self.submarineCache[submarine] = nil
 end
 
-function ESP:updateSubmarineComponents(components, submarine)
-	if not submarine or not submarine.Parent then
-		components.NameLabel.Visible = false
-		components.DistanceLabel.Visible = false
-		return
+-- Fast submarine name resolver with deep cache
+local SUB_NAME_SOURCES = {"Class", "Type", "SubmarineType", "SubmarineName", "Model", "NameTag", "DisplayName"}
+local function resolveSubmarineName(submarine)
+	local name = submarine.Name
+	if name and name ~= "" and name ~= "Submarine" then
+		return name
 	end
-
-	local primaryPart = submarine.PrimaryPart or submarine:FindFirstChildWhichIsA("BasePart")
-	local localHumanoidRootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-
-	if not (primaryPart and localHumanoidRootPart) then
-		components.NameLabel.Visible = false
-		components.DistanceLabel.Visible = false
-		return
-	end
-
-	local position, visible = Camera:WorldToViewportPoint(primaryPart.Position)
-	if not visible then
-		components.NameLabel.Visible = false
-		components.DistanceLabel.Visible = false
-		return
-	end
-
-	local distance = (localHumanoidRootPart.Position - primaryPart.Position).Magnitude
-	local time = tick()
-	local wave = (math.sin(time * 5) + 1) / 2
-	local color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
-
-	local owner = submarine:FindFirstChild("Owner") or submarine:FindFirstChild("Player")
-	if owner and owner.Value and owner.Value:IsA("Player") then
-		local ownerPlayer = owner.Value
-
-		if ownerPlayer:IsFriendsWith(LocalPlayer.UserId) then
-			if ownerPlayer.Team == LocalPlayer.Team then
-				color = Color3.fromRGB(0, 255, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
-			else
-				color = Color3.fromRGB(170, 0, 255):Lerp(Color3.fromRGB(0, 0, 0), wave)
+	
+	for _, source in ipairs(SUB_NAME_SOURCES) do
+		local obj = submarine:FindFirstChild(source)
+		if obj then
+			if obj:IsA("ValueBase") then
+				local val = obj.Value
+				if val and val ~= "" then
+					return tostring(val)
+				end
+			elseif obj:IsA("GuiObject") then
+				local txt = obj.Text
+				if txt and txt ~= "" then
+					return txt
+				end
 			end
-		else
-			color = Color3.fromRGB(255, 0, 0):Lerp(Color3.fromRGB(0, 0, 0), wave)
 		end
 	end
-
-	components.NameLabel.Visible = true
-	components.NameLabel.Text = "[Submarine]"
-	components.NameLabel.Position = Vector2.new(position.X, position.Y)
-	components.NameLabel.Color = color
-
-	components.DistanceLabel.Visible = true
-	components.DistanceLabel.Text = math.floor(distance) .. " studs"
-	components.DistanceLabel.Position = Vector2.new(position.X, position.Y + 15)
-	components.DistanceLabel.Color = Color3.new(1, 1, 1)
+	
+	for _, child in ipairs(submarine:GetDescendants()) do
+		if child:IsA("TextLabel") or child:IsA("TextButton") then
+			local txt = child.Text
+			if txt and txt ~= "" and txt ~= " " then
+				return txt
+			end
+		end
+	end
+	
+	return "[Submarine]"
 end
 
--- Main
+function ESP:_updateSubmarineComponents(comp, submarine)
+	if not submarine or not submarine.Parent then
+		comp.NameLabel.Visible = false
+		comp.DistanceLabel.Visible = false
+		return
+	end
+	
+	local primary = submarine.PrimaryPart or submarine:FindFirstChildWhichIsA("BasePart")
+	local localChar = self._localPlayer.Character
+	local localHRP = localChar and localChar:FindFirstChild("HumanoidRootPart")
+	
+	if not (primary and localHRP) then
+		comp.NameLabel.Visible = false
+		comp.DistanceLabel.Visible = false
+		return
+	end
+	
+	local dist = (localHRP.Position - primary.Position).Magnitude
+	comp._distance = dist
+	
+	if dist > MAX_DISTANCE then
+		comp.NameLabel.Visible = false
+		comp.DistanceLabel.Visible = false
+		return
+	end
+	
+	local pos, visible = self._camera:WorldToViewportPoint(primary.Position)
+	if not visible then
+		comp.NameLabel.Visible = false
+		comp.DistanceLabel.Visible = false
+		return
+	end
+	
+	local wave = (sin(tick() * 5) + 1) / 2
+	local color = self._colorRed:Lerp(self._colorBlack, wave)
+	
+	local ownerObj = submarine:FindFirstChild("Owner") or submarine:FindFirstChild("Player")
+	local ownerPlayer = nil
+	
+	if ownerObj and ownerObj.Value and ownerObj.Value:IsA("Player") then
+		ownerPlayer = ownerObj.Value
+		if ownerPlayer ~= comp._lastOwner then
+			comp._lastOwner = ownerPlayer
+			comp._ownerIsFriend = ownerPlayer:IsFriendsWith(self._localPlayer.UserId)
+			comp._sameTeam = ownerPlayer.Team == self._localPlayer.Team
+		end
+		
+		if comp._ownerIsFriend then
+			if comp._sameTeam then
+				color = self._colorGreen:Lerp(self._colorBlack, wave)
+			else
+				color = self._colorPurple:Lerp(self._colorBlack, wave)
+			end
+		end
+	end
+	
+	if not comp._subName then
+		comp._subName = resolveSubmarineName(submarine)
+	end
+	
+	local nameLabel = comp.NameLabel
+	nameLabel.Text = comp._subName
+	nameLabel.Position = V2new(pos.X, pos.Y)
+	nameLabel.Color = color
+	nameLabel.Visible = true
+	
+	local distLabel = comp.DistanceLabel
+	distLabel.Text = floor(dist) .. " studs"
+	distLabel.Position = V2new(pos.X, pos.Y + 15)
+	distLabel.Color = self._colorWhite
+	distLabel.Visible = true
+end
+
+-- Main loop with staggered updates
 local espInstance = ESP.new()
 
 RunService.RenderStepped:Connect(function()
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player == LocalPlayer then continue end
-
-		if player.Character then
-			if not espInstance.espCache[player] then
-				espInstance.espCache[player] = espInstance:createPlayerComponents()
+	local now = tick()
+	local frame = espInstance._frameCount + 1
+	espInstance._frameCount = frame
+	
+	local doFullUpdate = (now - espInstance._lastUpdate) >= FULL_UPDATE_INTERVAL
+	local doSkeleton = (now - espInstance._lastSkeletonUpdate) >= SKELETON_UPDATE_INTERVAL
+	
+	if doFullUpdate then
+		espInstance._lastUpdate = now
+	end
+	if doSkeleton then
+		espInstance._lastSkeletonUpdate = now
+	end
+	
+	local playersList = espInstance._players:GetPlayers()
+	local espCache = espInstance.espCache
+	local localPlayer = espInstance._localPlayer
+	local localChar = localPlayer.Character
+	local localHRP = localChar and localChar:FindFirstChild("HumanoidRootPart")
+	
+	if not localHRP then
+		for player, comp in pairs(espCache) do
+			espInstance:_hidePlayerComponents(comp)
+		end
+		return
+	end
+	
+	-- Player updates with distance-based LOD and staggered intervals
+	for _, player in ipairs(playersList) do
+		if player == localPlayer then continue end
+		
+		local character = player.Character
+		if character then
+			local comp = espCache[player]
+			if not comp then
+				comp = espInstance:_createPlayerComponents()
+				espCache[player] = comp
 			end
-			espInstance:updatePlayerComponents(espInstance.espCache[player], player.Character, player)
-		elseif espInstance.espCache[player] then
-			espInstance:hidePlayerComponents(espInstance.espCache[player])
+			
+			local dist = comp._distance
+			local isFar = dist > 3000
+			local doUpdate = doFullUpdate
+			
+			-- Far targets update less frequently
+			if isFar and (now - comp._lastFarUpdate) < FAR_UPDATE_INTERVAL then
+				doUpdate = false
+			else
+				comp._lastFarUpdate = now
+			end
+			
+			-- Close targets always update, far targets on interval
+			if doUpdate or not isFar then
+				espInstance:_updatePlayerComponents(comp, character, player, now, doSkeleton, doFullUpdate)
+			end
+		else
+			local comp = espCache[player]
+			if comp then
+				espInstance:_hidePlayerComponents(comp)
+			end
 		end
 	end
-
+	
+	-- Cleanup disconnected players
+	for player in pairs(espCache) do
+		if not player.Parent then
+			espInstance:_removePlayerEsp(player)
+		end
+	end
+	
+	-- Submarine updates
 	local gameSystems = workspace:FindFirstChild("Game Systems")
-	local activeSubmarines = {}
-
+	local activeSubs = {}
+	local subCache = espInstance.submarineCache
+	
 	if gameSystems then
-		local submarineWorkspace = gameSystems:FindFirstChild("Submarine Workspace")
-		if submarineWorkspace then
-			for _, submarine in ipairs(submarineWorkspace:GetChildren()) do
-				activeSubmarines[submarine] = true
-
-				if not espInstance.submarineCache[submarine] then
-					espInstance.submarineCache[submarine] = espInstance:createSubmarineComponents()
+		local subWorkspace = gameSystems:FindFirstChild("Submarine Workspace")
+		if subWorkspace then
+			for _, submarine in ipairs(subWorkspace:GetChildren()) do
+				activeSubs[submarine] = true
+				if not subCache[submarine] then
+					subCache[submarine] = espInstance:_createSubmarineComponents()
 				end
-				espInstance:updateSubmarineComponents(espInstance.submarineCache[submarine], submarine)
+				espInstance:_updateSubmarineComponents(subCache[submarine], submarine)
 			end
 		end
 	end
-
-	for submarine, components in pairs(espInstance.submarineCache) do
-		if not activeSubmarines[submarine] or not submarine.Parent then
-			espInstance:removeSubmarineEsp(submarine)
+	
+	for submarine, comp in pairs(subCache) do
+		if not activeSubs[submarine] or not submarine.Parent then
+			espInstance:_removeSubmarineEsp(submarine)
 		end
 	end
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-	espInstance:removePlayerEsp(player)
+	espInstance:_removePlayerEsp(player)
 end)
