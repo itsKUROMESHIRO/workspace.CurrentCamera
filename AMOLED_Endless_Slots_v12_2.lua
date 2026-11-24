@@ -1,0 +1,3179 @@
+--// AFK CASINO SLOTS: AMOLED ENDLESS EDITION v12.2
+--// Fixed: Rejoin Save-File Load Crash (Table/Key Validation & Safe GUI Boot)
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+
+-- Safe bit32 shim
+local bit = bit32
+if not bit or not bit.bxor then
+    bit = {}
+    function bit.bxor(a, b)
+        local res, p = 0, 1
+        a = math.floor(a) % 4294967296
+        b = math.floor(b) % 4294967296
+        while a > 0 or b > 0 do
+            local ra, rb = a % 2, b % 2
+            if ra ~= rb then res = res + p end
+            a = math.floor(a / 2)
+            b = math.floor(b / 2)
+            p = p * 2
+        end
+        return res
+    end
+end
+
+local function SafeTime()
+    local ok, t = pcall(function() return os.time() end)
+    if ok and type(t) == "number" and t > 0 then
+        return t
+    end
+    return math.floor(tick())
+end
+
+local SCRIPT_VERSION = "v12.2"
+local SAVE_FILE = "AFKSlotMinigame_AMOLED_v12.dat"
+local SECRET_SALT = "AM0L3D_SL0TS_V12_#4490_TR33_QU3ST_P4SS_AN1M"
+local SYNC_ATTR = "AMOLED_SLOTS_SYNC_V12"
+
+local ADMIN_USER_ID = 731346248
+local ADMIN_USERNAME = "nahrul1"
+
+local function IsAuthorizedAdmin()
+    if not LocalPlayer then return false end
+    return (LocalPlayer.UserId == ADMIN_USER_ID) and (string.lower(LocalPlayer.Name) == ADMIN_USERNAME)
+end
+
+-- Clean up old instances safely
+local GUI_NAME = "AFKSlotMinigame_AMOLED_V12"
+pcall(function()
+    if gethui then
+        local h = gethui()
+        if h and h:FindFirstChild(GUI_NAME) then h[GUI_NAME]:Destroy() end
+    end
+    if CoreGui:FindFirstChild(GUI_NAME) then CoreGui[GUI_NAME]:Destroy() end
+    if LocalPlayer:FindFirstChild("PlayerGui") and LocalPlayer.PlayerGui:FindFirstChild(GUI_NAME) then
+        LocalPlayer.PlayerGui[GUI_NAME]:Destroy()
+    end
+end)
+
+pcall(function() RunService:Set3dRenderingEnabled(true) end)
+
+--// Update Log Content
+local UPDATE_LOG_NOTES = {
+    "• FIXED (v12.2): Rejoin save-file crash when loading saved data or re-executing on mobile.",
+    "• NEW: Update Log popup & header button (📜 LOG) for patch notes.",
+    "• NEW: Branching Tech Tree — unlock Core Overclock first, then specialize into Fortune, Economy, or Survival!",
+    "• NEW: 3 New Minigame Passes — Turbo Fever, Auto-Claim QOL, and Hardmode Shield (8 Passes total).",
+    "• NEW: 7-Day Daily Login Streak + 8 Daily Quests & 5 Weekly Quests (circle-walk & jump tracking).",
+    "• QOL: Added '⚡ BUY ALL AFFORDABLE' upgrade button & live claimable quest counter badge.",
+    "• POLISH: Staggered reel anticipation/bounce animations, floating +$ popups, & economy-scaled Admin cash."
+}
+
+--// Minigame Passes Database (8 Passes)
+local PassCatalog = {
+    { Id = "vip",         Name = "👑 VIP Pass",           Cost = 120, Desc = "+50% Cash, +5% Luck, +25% Quest Gems & Gold Tag" },
+    { Id = "x2coins",     Name = "💰 2x Coins Pass",       Cost = 90,  Desc = "Permanently doubles all slot cash payouts (2.0x)" },
+    { Id = "x2luck",      Name = "🍀 2x Luck Pass",        Cost = 100, Desc = "Permanently doubles your net roll luck percentage" },
+    { Id = "pity_boost",  Name = "✨ Pity Accelerator",    Cost = 75,  Desc = "Every spin charges Golden & Diamond Pity +1 extra step" },
+    { Id = "gem_magnet",  Name = "💠 Gem Lucky Drops",     Cost = 110, Desc = "18% chance on any 3+ combo to find +1 to +4 bonus Gems" },
+    { Id = "turbo_fever", Name = "🔥 Turbo Fever Pass",    Cost = 95,  Desc = "Fever triggers every 15 spins (instead of 25) & lasts 8 spins" },
+    { Id = "auto_claim",  Name = "🎯 Auto-Claim QOL Pass", Cost = 65,  Desc = "Automatically claims Daily Login & finished Quests for you" },
+    { Id = "hard_shield", Name = "🛡️ Hardmode Shield",     Cost = 85,  Desc = "Cuts Hardmode luck penalty in half (-0.6%) & +1 Bailout" }
+}
+
+local DailyLoginRewards = { 15, 20, 25, 35, 45, 60, 100 }
+
+local DailyQuestTemplates = {
+    { Id = "d_jump_15",   Title = "🦘 Kangaroo Warmup",   Desc = "Jump 15 times",                    Goal = 15,   Reward = 12, StatKey = "Jumps" },
+    { Id = "d_jump_50",   Title = "🚀 Sky Hopper",        Desc = "Jump 50 times",                    Goal = 50,   Reward = 22, StatKey = "Jumps" },
+    { Id = "d_walk_500",  Title = "👟 Pacing the Floor",  Desc = "Walk 500 studs (circles count!)",  Goal = 500,  Reward = 15, StatKey = "Studs" },
+    { Id = "d_walk_2000", Title = "🏃 Marathon Runner",   Desc = "Walk 2,000 studs",                 Goal = 2000, Reward = 28, StatKey = "Studs" },
+    { Id = "d_spin_40",   Title = "🎰 Daily Grinder",     Desc = "Complete 40 spins",                Goal = 40,   Reward = 15, StatKey = "Spins" },
+    { Id = "d_spin_150",  Title = "⚙️ Reel Veteran",      Desc = "Complete 150 spins",               Goal = 150,  Reward = 30, StatKey = "Spins" },
+    { Id = "d_combo_8",   Title = "🔥 Triple Threat",     Desc = "Hit 8 three-of-a-kind+ combos",    Goal = 8,    Reward = 20, StatKey = "Combos" },
+    { Id = "d_hard_20",   Title = "💀 High Stakes Risk",  Desc = "Spin 20 times in Hardmode",        Goal = 20,   Reward = 25, StatKey = "HardSpins" }
+}
+
+local WeeklyQuestTemplates = {
+    { Id = "w_spin_1000", Title = "🏆 Weekly Slot Marathon", Desc = "Complete 1,000 spins this week",   Goal = 1000, Reward = 85,  StatKey = "Spins" },
+    { Id = "w_walk_15k",  Title = "🧭 World Explorer",       Desc = "Walk 15,000 studs this week",      Goal = 15000,Reward = 75,  StatKey = "Studs" },
+    { Id = "w_jump_300",  Title = "⚡ Gravity Defier",       Desc = "Jump 300 times this week",         Goal = 300,  Reward = 65,  StatKey = "Jumps" },
+    { Id = "w_combo_100", Title = "💎 Combo Master",         Desc = "Hit 100 3+ combos this week",      Goal = 100,  Reward = 90,  StatKey = "Combos" },
+    { Id = "w_reb_3",     Title = "🔄 Cycle Ascendant",      Desc = "Perform 3 Rebirths this week",     Goal = 3,    Reward = 120, StatKey = "Rebirths" }
+}
+
+local Titles = {
+    { Id = "novice",        Name = "🌱 Novice Spinner",     ReqText = "Default Starter Title",        BuffText = "No bonus",                 CashMult = 1.00, LuckPct = 0.0,  Check = function(_) return true end },
+    { Id = "gambler",       Name = "🎰 Street Gambler",     ReqText = "Reach 1,000 Total Spins",      BuffText = "+15% Cash Gain",           CashMult = 1.15, LuckPct = 0.0,  Check = function(d) return (d.TotalSpins or 0) >= 1000 end },
+    { Id = "clover_bearer", Name = "🍀 Lucky Charm",        ReqText = "Reach Luck Level 20",          BuffText = "+4.0% Luck",               CashMult = 1.00, LuckPct = 4.0,  Check = function(d) return (d.LuckLevel or 1) >= 20 end },
+    { Id = "cycle_breaker", Name = "🔄 Cycle Breaker",      ReqText = "Reach 3 Rebirths",             BuffText = "+30% Cash Gain",           CashMult = 1.30, LuckPct = 0.0,  Check = function(d) return (d.Rebirths or 0) >= 3 end },
+    { Id = "high_roller",   Name = "💎 High Roller",        ReqText = "Win $10.0M+ in a single spin", BuffText = "+25% Cash & +3.5% Luck",   CashMult = 1.25, LuckPct = 3.5,  Check = function(d) return (d.BiggestWin or 0) >= 1e7 end },
+    { Id = "sovereign",     Name = "👑 Prestige Sovereign", ReqText = "Reach 2 Prestiges",            BuffText = "+75% Cash & +6.0% Luck",   CashMult = 1.75, LuckPct = 6.0,  Check = function(d) return (d.Prestiges or 0) >= 2 end },
+    { Id = "hard_survivor", Name = "🔥 Hardmode Survivor",  ReqText = "Reach 5 Rebirths in Hardmode", BuffText = "+120% Cash & +10.0% Luck", CashMult = 2.20, LuckPct = 10.0, Check = function(d) return (d.HardRebirths or 0) >= 5 end },
+    { Id = "endless_god",   Name = "⚡ Endless God",        ReqText = "Reach 5 Prestiges",            BuffText = "+250% Cash & +15.0% Luck", CashMult = 2.50, LuckPct = 15.0, Check = function(d) return (d.Prestiges or 0) >= 5 end }
+}
+
+local TitleMap = {}
+for _, t in ipairs(Titles) do TitleMap[t.Id] = t end
+
+--// Anti-Tamper Crypto & Hashing Engine
+local function FNV1aHash(str)
+    local hash = 2166136261
+    for i = 1, #str do
+        hash = bit.bxor(hash, string.byte(str, i))
+        hash = (hash * 16777619) % 4294967296
+    end
+    return string.format("%08x", hash)
+end
+
+local function ComputeSaveSignature(d)
+    local uid = tostring(LocalPlayer and LocalPlayer.UserId or 0)
+    local passesStr = table.concat({
+        d.Passes and d.Passes.vip and "1" or "0",
+        d.Passes and d.Passes.x2coins and "1" or "0",
+        d.Passes and d.Passes.x2luck and "1" or "0",
+        d.Passes and d.Passes.pity_boost and "1" or "0",
+        d.Passes and d.Passes.gem_magnet and "1" or "0",
+        d.Passes and d.Passes.turbo_fever and "1" or "0",
+        d.Passes and d.Passes.auto_claim and "1" or "0",
+        d.Passes and d.Passes.hard_shield and "1" or "0"
+    }, ",")
+
+    local canonical = table.concat({
+        SECRET_SALT,
+        uid,
+        tostring(d.HardMode and 1 or 0),
+        tostring(d.EquippedTitle or "novice"),
+        string.format("%.4f", tonumber(d.Cash) or 0),
+        tostring(math.floor(tonumber(d.Gems) or 0)),
+        passesStr,
+        tostring(d.SlotCount or 3),
+        tostring(d.BetLevel or 1),
+        tostring(d.LuckLevel or 1),
+        tostring(d.SpeedLevel or 1),
+        tostring(d.GoldenPityLevel or 0),
+        tostring(d.DiamondPityLevel or 0),
+        tostring(d.GoldenCounter or 0),
+        tostring(d.DiamondCounter or 0),
+        tostring(d.Rebirths or 0),
+        tostring(d.HardRebirths or 0),
+        tostring(d.Prestiges or 0),
+        tostring(d.PrestigeTokens or 0),
+        tostring(d.TotalSpins or 0),
+        string.format("%.4f", tonumber(d.BiggestWin) or 0),
+        tostring(d.BailoutsLeft or 0),
+        tostring(d.Tech and d.Tech.Overclock or 0),
+        tostring(d.Tech and d.Tech.Clover or 0),
+        tostring(d.Tech and d.Tech.Prismatic or 0),
+        tostring(d.Tech and d.Tech.Resonance or 0),
+        tostring(d.Tech and d.Tech.Vault or 0),
+        tostring(d.Tech and d.Tech.Cashback or 0),
+        tostring(d.Tech and d.Tech.Mastery or 0)
+    }, "|")
+
+    local pass1 = FNV1aHash(canonical)
+    local pass2 = FNV1aHash(pass1 .. ":" .. SECRET_SALT .. ":" .. uid)
+    return pass1 .. pass2
+end
+
+local function XORCipher(input)
+    local uid = tostring(LocalPlayer and LocalPlayer.UserId or 0)
+    local key = SECRET_SALT .. "_" .. uid
+    local keyLen = #key
+    local out = table.create(#input)
+    for i = 1, #input do
+        local b = string.byte(input, i)
+        local k = string.byte(key, ((i - 1) % keyLen) + 1)
+        local rolled = bit.bxor(b, bit.bxor(k, (i * 131) % 256))
+        out[i] = string.char(rolled)
+    end
+    return table.concat(out)
+end
+
+local B64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function ToBase64(data)
+    return ((data:gsub(".", function(x)
+        local r, b = "", x:byte()
+        for i = 8, 1, -1 do r = r .. (b % 2 ^ i - b % 2 ^ (i - 1) > 0 and "1" or "0") end
+        return r
+    end) .. "0000"):gsub("%d%d%d?%d?%d?%d?", function(x)
+        if #x < 6 then return "" end
+        local c = 0
+        for i = 1, 6 do c = c + (x:sub(i, i) == "1" and 2 ^ (6 - i) or 0) end
+        return B64_CHARS:sub(c + 1, c + 1)
+    end) .. ({ "", "==", "=" })[#data % 3 + 1])
+end
+
+local function FromBase64(data)
+    data = string.gsub(data, "[^" .. B64_CHARS .. "=]", "")
+    return (data:gsub(".", function(x)
+        if x == "=" then return "" end
+        local f = B64_CHARS:find(x)
+        if not f then return "" end
+        f = f - 1
+        local r = ""
+        for i = 6, 1, -1 do r = r .. (f % 2 ^ i - f % 2 ^ (i - 1) > 0 and "1" or "0") end
+        return r
+    end):gsub("%d%d%d?%d?%d?%d?%d?%d?", function(x)
+        if #x ~= 8 then return "" end
+        local c = 0
+        for i = 1, 8 do c = c + (x:sub(i, i) == "1" and 2 ^ (8 - i) or 0) end
+        return string.char(c)
+    end))
+end
+
+local function GetCurrentDayKey()
+    return math.floor(SafeTime() / 86400)
+end
+
+local function GetCurrentWeekKey()
+    return math.floor(SafeTime() / (86400 * 7))
+end
+
+--// Default Clean State
+local function CreateDefaultData()
+    return {
+        LastSeenVersion = "",
+        HardMode = false,
+        EquippedTitle = "novice",
+        Cash = 100,
+        Gems = 0,
+        Passes = {
+            vip = false,
+            x2coins = false,
+            x2luck = false,
+            pity_boost = false,
+            gem_magnet = false,
+            turbo_fever = false,
+            auto_claim = false,
+            hard_shield = false
+        },
+        Login = {
+            LastClaimDay = 0,
+            Streak = 0
+        },
+        Daily = {
+            DayKey = GetCurrentDayKey(),
+            Jumps = 0,
+            Studs = 0,
+            Spins = 0,
+            Combos = 0,
+            HardSpins = 0,
+            Claimed = {}
+        },
+        Weekly = {
+            WeekKey = GetCurrentWeekKey(),
+            Jumps = 0,
+            Studs = 0,
+            Spins = 0,
+            Combos = 0,
+            Rebirths = 0,
+            Claimed = {}
+        },
+        SlotCount = 3,
+        BetLevel = 1,
+        LuckLevel = 1,
+        SpeedLevel = 1,
+        GoldenPityLevel = 0,
+        DiamondPityLevel = 0,
+        GoldenCounter = 0,
+        DiamondCounter = 0,
+        Rebirths = 0,
+        HardRebirths = 0,
+        Prestiges = 0,
+        PrestigeTokens = 0,
+        TotalSpins = 0,
+        BiggestWin = 0,
+        BailoutsLeft = 2,
+        Tech = {
+            Overclock = 0,
+            Clover = 0,
+            Prismatic = 0,
+            Resonance = 0,
+            Vault = 0,
+            Cashback = 0,
+            Mastery = 0
+        }
+    }
+end
+
+local DataStore = CreateDefaultData()
+local TamperDetected = false
+
+local State = {
+    Spinning = false,
+    AutoSpin = false,
+    AutoRebirth = false,
+    Render3DOff = false,
+    ManualBid = nil,
+    AutoMaxBid = true,
+    FeverCharge = 0,
+    FeverSpinsLeft = 0,
+    SessionSpins = 0,
+    SessionWins = 0
+}
+
+local LiveSeal = ComputeSaveSignature(DataStore)
+
+local function RefreshSeal()
+    LiveSeal = ComputeSaveSignature(DataStore)
+end
+
+local function VerifyRuntimeIntegrity()
+    if ComputeSaveSignature(DataStore) ~= LiveSeal then
+        DataStore = CreateDefaultData()
+        RefreshSeal()
+        TamperDetected = true
+        return false
+    end
+    return true
+end
+
+setmetatable(State, {
+    __index = function(_, key)
+        return DataStore[key]
+    end,
+    __newindex = function(self, key, val)
+        if DataStore[key] ~= nil then
+            if type(val) == "number" and (val ~= val or val == math.huge or val == -math.huge) then
+                return
+            end
+            DataStore[key] = val
+            RefreshSeal()
+        else
+            rawset(self, key, val)
+        end
+    end
+})
+
+local function CheckTimersReset()
+    local today = GetCurrentDayKey()
+    if type(DataStore.Daily) ~= "table" or DataStore.Daily.DayKey ~= today then
+        DataStore.Daily = {
+            DayKey = today,
+            Jumps = 0,
+            Studs = 0,
+            Spins = 0,
+            Combos = 0,
+            HardSpins = 0,
+            Claimed = {}
+        }
+    end
+    if type(DataStore.Daily.Claimed) ~= "table" then
+        DataStore.Daily.Claimed = {}
+    end
+
+    local thisWeek = GetCurrentWeekKey()
+    if type(DataStore.Weekly) ~= "table" or DataStore.Weekly.WeekKey ~= thisWeek then
+        DataStore.Weekly = {
+            WeekKey = thisWeek,
+            Jumps = 0,
+            Studs = 0,
+            Spins = 0,
+            Combos = 0,
+            Rebirths = 0,
+            Claimed = {}
+        }
+    end
+    if type(DataStore.Weekly.Claimed) ~= "table" then
+        DataStore.Weekly.Claimed = {}
+    end
+
+    if type(DataStore.Login) ~= "table" then
+        DataStore.Login = { LastClaimDay = 0, Streak = 0 }
+    end
+end
+
+--// Encrypted & Signed Save / Load System (Fixed Rejoin Crash)
+local function SaveData()
+    if not VerifyRuntimeIntegrity() then return end
+    pcall(function()
+        if writefile then
+            local sig = ComputeSaveSignature(DataStore)
+            local packet = {
+                v = 12,
+                sig = sig,
+                payload = DataStore
+            }
+            local jsonStr = HttpService:JSONEncode(packet)
+            local encrypted = ToBase64(XORCipher(jsonStr))
+            writefile(SAVE_FILE, encrypted)
+        end
+    end)
+end
+
+local function LoadData()
+    local hasFile = false
+    pcall(function()
+        if isfile and isfile(SAVE_FILE) then hasFile = true end
+    end)
+    if not hasFile then return end
+
+    local success = pcall(function()
+        local rawB64 = readfile(SAVE_FILE)
+        if type(rawB64) ~= "string" or #rawB64 == 0 then return end
+
+        local decryptedJson = XORCipher(FromBase64(rawB64))
+        local packet = HttpService:JSONDecode(decryptedJson)
+
+        if type(packet) ~= "table" or packet.v ~= 12 or type(packet.payload) ~= "table" or type(packet.sig) ~= "string" then
+            TamperDetected = true
+            DataStore = CreateDefaultData()
+            RefreshSeal()
+            SaveData()
+            return
+        end
+
+        local p = packet.payload
+        local expectedSig = ComputeSaveSignature(p)
+        if packet.sig ~= expectedSig then
+            TamperDetected = true
+            DataStore = CreateDefaultData()
+            RefreshSeal()
+            SaveData()
+            return
+        end
+
+        DataStore.LastSeenVersion = tostring(p.LastSeenVersion or "")
+        DataStore.HardMode = (p.HardMode == true)
+        DataStore.EquippedTitle = TitleMap[tostring(p.EquippedTitle)] and tostring(p.EquippedTitle) or "novice"
+        DataStore.Cash = math.max(0, tonumber(p.Cash) or 100)
+        DataStore.Gems = math.max(0, math.floor(tonumber(p.Gems) or 0))
+        DataStore.SlotCount = math.clamp(math.floor(tonumber(p.SlotCount) or 3), 3, 10)
+        DataStore.BetLevel = math.max(1, math.floor(tonumber(p.BetLevel) or 1))
+        DataStore.LuckLevel = math.max(1, math.floor(tonumber(p.LuckLevel) or 1))
+        DataStore.SpeedLevel = math.clamp(math.floor(tonumber(p.SpeedLevel) or 1), 1, 25)
+        DataStore.GoldenPityLevel = math.clamp(math.floor(tonumber(p.GoldenPityLevel) or 0), 0, 5)
+        DataStore.DiamondPityLevel = math.clamp(math.floor(tonumber(p.DiamondPityLevel) or 0), 0, 45)
+        DataStore.GoldenCounter = math.max(0, math.floor(tonumber(p.GoldenCounter) or 0))
+        DataStore.DiamondCounter = math.max(0, math.floor(tonumber(p.DiamondCounter) or 0))
+        DataStore.Rebirths = math.max(0, math.floor(tonumber(p.Rebirths) or 0))
+        DataStore.HardRebirths = math.max(0, math.floor(tonumber(p.HardRebirths) or 0))
+        DataStore.Prestiges = math.max(0, math.floor(tonumber(p.Prestiges) or 0))
+        DataStore.PrestigeTokens = math.max(0, math.floor(tonumber(p.PrestigeTokens) or 0))
+        DataStore.TotalSpins = math.max(0, math.floor(tonumber(p.TotalSpins) or 0))
+        DataStore.BiggestWin = math.max(0, tonumber(p.BiggestWin) or 0)
+        DataStore.BailoutsLeft = math.clamp(math.floor(tonumber(p.BailoutsLeft) or 0), 0, 3)
+
+        if type(p.Passes) == "table" then
+            for k, _ in pairs(DataStore.Passes) do
+                DataStore.Passes[k] = (p.Passes[k] == true)
+            end
+        end
+
+        if type(p.Login) == "table" then
+            DataStore.Login.LastClaimDay = math.floor(tonumber(p.Login.LastClaimDay) or 0)
+            DataStore.Login.Streak = math.max(0, math.floor(tonumber(p.Login.Streak) or 0))
+        end
+
+        -- CRITICAL FIX: Empty Lua tables encode as JSON arrays `[]`, which decode cleanly,
+        -- ensure Claimed is strictly a key->boolean dictionary table so indexing never errors.
+        if type(p.Daily) == "table" then
+            DataStore.Daily.DayKey = tonumber(p.Daily.DayKey) or GetCurrentDayKey()
+            DataStore.Daily.Jumps = math.max(0, math.floor(tonumber(p.Daily.Jumps) or 0))
+            DataStore.Daily.Studs = math.max(0, tonumber(p.Daily.Studs) or 0)
+            DataStore.Daily.Spins = math.max(0, math.floor(tonumber(p.Daily.Spins) or 0))
+            DataStore.Daily.Combos = math.max(0, math.floor(tonumber(p.Daily.Combos) or 0))
+            DataStore.Daily.HardSpins = math.max(0, math.floor(tonumber(p.Daily.HardSpins) or 0))
+            local cleanDailyClaimed = {}
+            if type(p.Daily.Claimed) == "table" then
+                for k, v in pairs(p.Daily.Claimed) do
+                    if type(k) == "string" and v == true then cleanDailyClaimed[k] = true end
+                end
+            end
+            DataStore.Daily.Claimed = cleanDailyClaimed
+        end
+
+        if type(p.Weekly) == "table" then
+            DataStore.Weekly.WeekKey = tonumber(p.Weekly.WeekKey) or GetCurrentWeekKey()
+            DataStore.Weekly.Jumps = math.max(0, math.floor(tonumber(p.Weekly.Jumps) or 0))
+            DataStore.Weekly.Studs = math.max(0, tonumber(p.Weekly.Studs) or 0)
+            DataStore.Weekly.Spins = math.max(0, math.floor(tonumber(p.Weekly.Spins) or 0))
+            DataStore.Weekly.Combos = math.max(0, math.floor(tonumber(p.Weekly.Combos) or 0))
+            DataStore.Weekly.Rebirths = math.max(0, math.floor(tonumber(p.Weekly.Rebirths) or 0))
+            local cleanWeeklyClaimed = {}
+            if type(p.Weekly.Claimed) == "table" then
+                for k, v in pairs(p.Weekly.Claimed) do
+                    if type(k) == "string" and v == true then cleanWeeklyClaimed[k] = true end
+                end
+            end
+            DataStore.Weekly.Claimed = cleanWeeklyClaimed
+        end
+
+        if type(p.Tech) == "table" then
+            for k, _ in pairs(DataStore.Tech) do
+                DataStore.Tech[k] = math.max(0, math.floor(tonumber(p.Tech[k]) or 0))
+            end
+        end
+
+        CheckTimersReset()
+        RefreshSeal()
+    end)
+
+    if not success then
+        DataStore = CreateDefaultData()
+        RefreshSeal()
+        SaveData()
+    end
+end
+
+LoadData()
+
+local isNewUpdateRelease = (DataStore.LastSeenVersion ~= SCRIPT_VERSION)
+if isNewUpdateRelease then
+    DataStore.LastSeenVersion = SCRIPT_VERSION
+    RefreshSeal()
+    SaveData()
+end
+
+-- 4 Icons
+local Icons = {
+    { Symbol = "🍒", Name = "Cherry",  Mult = 1.6,  BaseWeight = 48 },
+    { Symbol = "🍋", Name = "Lemon",   Mult = 3.2,  BaseWeight = 31 },
+    { Symbol = "💎", Name = "Diamond", Mult = 9.0,  BaseWeight = 15 },
+    { Symbol = "7️⃣", Name = "Seven",   Mult = 25.0, BaseWeight = 6  }
+}
+
+--// Extended Suffix Formatter
+local Suffixes = {
+    "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc",
+    "Ud", "Dd", "Td", "Qad", "Qid", "Sxd", "Spd", "Ocd", "Nod",
+    "Vg", "Uvg", "Dvg", "Tvg", "Qavg", "Qivg", "Sxvg", "Spvg", "Ocvg", "Novg",
+    "Tg", "Utg", "Dtg", "Ttg", "Qatg", "Qitg", "Sxtg", "Sptg", "Octg", "Notg", "Ce"
+}
+
+local function FormatNum(n)
+    if n ~= n or n < 0 then return "0" end
+    if n == math.huge then return "∞" end
+    if n < 1000 then return tostring(math.floor(n)) end
+    local exp = math.floor(math.log10(n))
+    local tier = math.floor(exp / 3)
+    if tier < #Suffixes then
+        local scale = 10 ^ (tier * 3)
+        return string.format("%.2f%s", n / scale, Suffixes[tier + 1])
+    else
+        local mantissa = n / (10 ^ exp)
+        return string.format("%.2fe%d", mantissa, exp)
+    end
+end
+
+local function GetActiveTitleObj()
+    local t = TitleMap[State.EquippedTitle]
+    if t and t.Check(DataStore) then return t end
+    return TitleMap["novice"]
+end
+
+--// Economy & Scaling Formulas
+local MIN_BID = 10
+local MAX_SPEED_LEVEL = 25
+
+local function GetMaxBailouts()
+    return DataStore.Passes.hard_shield and 3 or 2
+end
+
+local function GetModePriceMult()
+    return State.HardMode and 2.0 or 1.0
+end
+
+local function GetGoldenReq()
+    return math.max(5, 10 - State.GoldenPityLevel)
+end
+
+local function GetDiamondReq()
+    return math.max(55, 100 - State.DiamondPityLevel)
+end
+
+local function GetGoldenUpgradeCost()
+    if State.GoldenPityLevel >= 5 then return math.huge end
+    local base = State.HardMode and 3500 or 5000
+    local growth = State.HardMode and 3.8 or 4.5
+    return math.floor(base * (growth ^ State.GoldenPityLevel) * GetModePriceMult())
+end
+
+local function GetDiamondUpgradeCost()
+    if State.DiamondPityLevel >= 45 then return math.huge end
+    local base = State.HardMode and 12000 or 18000
+    local growth = State.HardMode and 1.50 or 1.62
+    return math.floor(base * (growth ^ State.DiamondPityLevel) * GetModePriceMult())
+end
+
+local function GetMaxBetCost()
+    local growth = State.HardMode and 1.48 or 1.38
+    return math.max(MIN_BID, math.floor(10 * (growth ^ (State.BetLevel - 1))))
+end
+
+local function GetEffectiveBet()
+    local maxAllowed = GetMaxBetCost()
+    local desiredBid = maxAllowed
+
+    if not State.AutoMaxBid and State.ManualBid ~= nil then
+        desiredBid = math.clamp(math.floor(State.ManualBid), MIN_BID, maxAllowed)
+    end
+
+    if not State.HardMode then
+        return desiredBid, false
+    end
+
+    if State.Cash >= desiredBid then
+        return desiredBid, false
+    elseif State.Cash >= MIN_BID then
+        return math.floor(State.Cash), true
+    else
+        return MIN_BID, true
+    end
+end
+
+local function GetBetUpgradeCost()
+    local base = 120
+    local growth = State.HardMode and 2.15 or 2.65
+    return math.floor(base * (growth ^ (State.BetLevel - 1)) * GetModePriceMult())
+end
+
+local function GetLuckUpgradeCost()
+    local base = 250
+    local growth = State.HardMode and 2.30 or 2.85
+    return math.floor(base * (growth ^ (State.LuckLevel - 1)) * GetModePriceMult())
+end
+
+local function GetSpeedUpgradeCost()
+    if State.SpeedLevel >= MAX_SPEED_LEVEL then return math.huge end
+    local base = 300
+    local growth = State.HardMode and 2.10 or 2.50
+    return math.floor(base * (growth ^ (State.SpeedLevel - 1)) * GetModePriceMult())
+end
+
+local function GetSlotUpgradeCost()
+    if State.SlotCount >= 10 then return math.huge end
+    local base = State.HardMode and 12000 or 20000
+    local growth = State.HardMode and 14.0 or 18.0
+    return math.floor(base * (growth ^ (State.SlotCount - 3)) * GetModePriceMult())
+end
+
+local function GetRebirthCost()
+    local base = 250000
+    local growth = State.HardMode and 7.2 or 8.5
+    return math.floor(base * (growth ^ State.Rebirths) * GetModePriceMult())
+end
+
+local function GetPrestigeReqRebirths()
+    return 8 + (State.Prestiges * 4)
+end
+
+local function GetPrestigeTokenGain()
+    local extra = math.max(0, State.Rebirths - GetPrestigeReqRebirths())
+    local raw = 1 + math.floor(extra / 3)
+    return State.HardMode and math.ceil(raw * 1.5) or raw
+end
+
+local function GetCashbackRate()
+    if not State.HardMode then return 0 end
+    return 0.85 * (1 - (1 / (1 + State.Tech.Cashback * 0.15)))
+end
+
+local function GetMasteryKeepRate()
+    return 0.90 * (1 - (1 / (1 + State.Tech.Mastery * 0.15)))
+end
+
+local function GetHighRollerMult(betAmount)
+    local betTierBonus = 1 + ((State.BetLevel - 1) * (State.HardMode and 0.10 or 0.07))
+    local scaleRatio = math.max(0.25, betAmount / math.max(MIN_BID, GetMaxBetCost()))
+    return betTierBonus * scaleRatio
+end
+
+local function GetUpgradeCashMultiplier(betAmount)
+    local rebirthMult = 1 + (State.Rebirths * (State.HardMode and 1.15 or 0.75))
+    local prestigeMult = 2.25 ^ State.Prestiges
+    local techMult = 1 + (State.Tech.Overclock * 0.35)
+    local highRoller = GetHighRollerMult(betAmount or GetMaxBetCost())
+    local titleMult = GetActiveTitleObj().CashMult
+    local passCoins = DataStore.Passes.x2coins and 2.0 or 1.0
+    local passVip = DataStore.Passes.vip and 1.5 or 1.0
+    return rebirthMult * prestigeMult * techMult * highRoller * titleMult * passCoins * passVip
+end
+
+local function GetTotalMultiplier(betAmount)
+    local baseUpgradeMult = GetUpgradeCashMultiplier(betAmount)
+    local modeBonus = State.HardMode and 1.65 or 0.65
+    local feverMult = (State.FeverSpinsLeft > 0) and 2.0 or 1.0
+    return baseUpgradeMult * modeBonus * feverMult
+end
+
+local function GetSpinDuration()
+    local progress = math.clamp((State.SpeedLevel - 1) / (MAX_SPEED_LEVEL - 1), 0, 1)
+    return 1.15 - (0.73 * progress)
+end
+
+local function GetNetLuckPercent(betAmount, specialLuckMult)
+    local mult = specialLuckMult or 1
+    local betRatio = math.clamp((betAmount or MIN_BID) / math.max(MIN_BID, GetMaxBetCost()), 0.1, 1)
+    local betLuckBonus = ((State.BetLevel - 1) * 1.2) * betRatio
+    local titleLuck = GetActiveTitleObj().LuckPct
+    local vipLuck = DataStore.Passes.vip and 5.0 or 0.0
+    local prismaticLuck = State.Tech.Prismatic * 4.0
+    local hardPenalty = State.HardMode and (DataStore.Passes.hard_shield and -0.6 or -1.2) or 0.0
+
+    local rawLuck = ((State.LuckLevel - 1) * 2.0) + (State.Tech.Clover * 5.0) + prismaticLuck + betLuckBonus + titleLuck + vipLuck + hardPenalty
+    if DataStore.Passes.x2luck and rawLuck > 0 then
+        rawLuck = rawLuck * 2.0
+    end
+    return rawLuck * mult
+end
+
+local function RollIcon(betAmount, specialLuckMult)
+    local effectiveLuck = GetNetLuckPercent(betAmount, specialLuckMult)
+
+    local weights = {
+        math.clamp(Icons[1].BaseWeight - (effectiveLuck * 0.28), 6, 80),
+        Icons[2].BaseWeight,
+        math.max(2, Icons[3].BaseWeight + (effectiveLuck * 0.48)),
+        math.max(1, Icons[4].BaseWeight + (effectiveLuck * 0.32))
+    }
+    local totalWeight = 0
+    for _, w in ipairs(weights) do totalWeight += w end
+    local roll = math.random() * totalWeight
+    local cumulative = 0
+    for i, w in ipairs(weights) do
+        cumulative += w
+        if roll <= cumulative then return Icons[i] end
+    end
+    return Icons[1]
+end
+
+--// Cross-Player Script User Sync Engine
+local RemoteLeaderboardCache = {}
+
+local function BroadcastMyStats()
+    if not LocalPlayer then return end
+    local tObj = GetActiveTitleObj()
+    local payload = {
+        u = LocalPlayer.Name,
+        d = LocalPlayer.DisplayName,
+        id = LocalPlayer.UserId,
+        c = DataStore.Cash,
+        r = DataStore.Rebirths,
+        p = DataStore.Prestiges,
+        h = DataStore.HardMode and 1 or 0,
+        v = DataStore.Passes.vip and 1 or 0,
+        t = tObj.Name
+    }
+    pcall(function()
+        LocalPlayer:SetAttribute(SYNC_ATTR, HttpService:JSONEncode(payload))
+    end)
+    RemoteLeaderboardCache[LocalPlayer.UserId] = payload
+end
+
+local function ScanConnectedScriptUsers()
+    local list = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local raw = nil
+        pcall(function() raw = plr:GetAttribute(SYNC_ATTR) end)
+        if type(raw) == "string" and #raw > 0 then
+            local okParse, parsed = pcall(function() return HttpService:JSONDecode(raw) end)
+            if okParse and type(parsed) == "table" then
+                parsed.u = plr.Name
+                parsed.d = plr.DisplayName
+                parsed.id = plr.UserId
+                RemoteLeaderboardCache[plr.UserId] = parsed
+                table.insert(list, parsed)
+            end
+        elseif plr == LocalPlayer then
+            BroadcastMyStats()
+            if RemoteLeaderboardCache[plr.UserId] then
+                table.insert(list, RemoteLeaderboardCache[plr.UserId])
+            end
+        end
+    end
+
+    table.sort(list, function(a, b)
+        local pa, pb = tonumber(a.p) or 0, tonumber(b.p) or 0
+        if pa ~= pb then return pa > pb end
+        local ra, rb = tonumber(a.r) or 0, tonumber(b.r) or 0
+        if ra ~= rb then return ra > rb end
+        return (tonumber(a.c) or 0) > (tonumber(b.c) or 0)
+    end)
+
+    return list
+end
+
+--// AMOLED Palette
+local C_BLACK     = Color3.fromRGB(0, 0, 0)
+local C_SURFACE   = Color3.fromRGB(11, 13, 18)
+local C_CARD      = Color3.fromRGB(18, 21, 29)
+local C_BORDER    = Color3.fromRGB(42, 47, 62)
+local C_GOLD      = Color3.fromRGB(255, 206, 75)
+local C_DIAMOND   = Color3.fromRGB(65, 225, 255)
+local C_GREEN     = Color3.fromRGB(42, 205, 118)
+local C_BLUE      = Color3.fromRGB(52, 130, 240)
+local C_PURPLE    = Color3.fromRGB(155, 70, 225)
+local C_ORANGE    = Color3.fromRGB(235, 125, 38)
+local C_PINK      = Color3.fromRGB(225, 60, 150)
+local C_RED       = Color3.fromRGB(232, 68, 78)
+
+local function AttachButtonBounce(btn)
+    btn.MouseButton1Down:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 0.25
+        }):Play()
+    end)
+    local function restore()
+        TweenService:Create(btn, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 0
+        }):Play()
+    end
+    btn.MouseButton1Up:Connect(restore)
+    btn.MouseLeave:Connect(restore)
+end
+
+local function ApplyCardGradient(frame, c1, c2)
+    local grad = Instance.new("UIGradient")
+    grad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, c1),
+        ColorSequenceKeypoint.new(1, c2)
+    })
+    grad.Rotation = 90
+    grad.Parent = frame
+end
+
+--// ScreenGui Setup (Safe Parent Fallbacks)
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = GUI_NAME
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local parented = false
+if gethui then
+    parented = pcall(function() ScreenGui.Parent = gethui() end)
+end
+if not parented then
+    parented = pcall(function() ScreenGui.Parent = CoreGui end)
+end
+if not parented then
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+--// Floating Re-Open Pill
+local OpenPill = Instance.new("TextButton")
+OpenPill.Size = UDim2.new(0, 118, 0, 40)
+OpenPill.Position = UDim2.new(0, 16, 0.5, -20)
+OpenPill.BackgroundColor3 = C_BLACK
+OpenPill.Text = "🎰 OPEN SLOTS"
+OpenPill.TextColor3 = C_GOLD
+OpenPill.Font = Enum.Font.GothamBold
+OpenPill.TextSize = 12
+OpenPill.Visible = false
+OpenPill.Parent = ScreenGui
+Instance.new("UICorner", OpenPill).CornerRadius = UDim.new(1, 0)
+local PillStroke = Instance.new("UIStroke", OpenPill)
+PillStroke.Color = C_GOLD
+PillStroke.Thickness = 1.5
+
+do
+    local dragging, dragInput, dragStart, startPos
+    OpenPill.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = OpenPill.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    OpenPill.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            OpenPill.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+--// FULL-SCREEN LANDSCAPE AMOLED ROOT CONTAINER
+local Root = Instance.new("Frame")
+Root.Name = "AMOLEDRoot"
+Root.Size = UDim2.new(1, 0, 1, 0)
+Root.BackgroundColor3 = C_BLACK
+Root.BorderSizePixel = 0
+Root.Parent = ScreenGui
+
+local Container = Instance.new("Frame")
+Container.Size = UDim2.new(1, -20, 1, -18)
+Container.Position = UDim2.new(0.5, 0, 0.5, 0)
+Container.AnchorPoint = Vector2.new(0.5, 0.5)
+Container.BackgroundColor3 = C_BLACK
+Container.BorderSizePixel = 0
+Container.Parent = Root
+
+--// Top Header Bar
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 40)
+Header.BackgroundColor3 = C_SURFACE
+Header.Parent = Container
+Instance.new("UICorner", Header).CornerRadius = UDim.new(0, 10)
+local HStroke = Instance.new("UIStroke", Header)
+HStroke.Color = C_BORDER
+HStroke.Thickness = 1
+ApplyCardGradient(Header, Color3.fromRGB(16, 19, 27), Color3.fromRGB(9, 10, 14))
+
+local TitleLbl = Instance.new("TextLabel")
+TitleLbl.Size = UDim2.new(0.28, 0, 1, 0)
+TitleLbl.Position = UDim2.new(0, 12, 0, 0)
+TitleLbl.BackgroundTransparency = 1
+TitleLbl.Text = IsAuthorizedAdmin() and "🎰 SLOTS v12 [ADMIN]" or "🎰 AMOLED SLOTS v12"
+TitleLbl.TextColor3 = IsAuthorizedAdmin() and C_DIAMOND or C_GOLD
+TitleLbl.Font = Enum.Font.GothamBlack
+TitleLbl.TextSize = 13
+TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+TitleLbl.Parent = Header
+
+local GemsHeaderLbl = Instance.new("TextLabel")
+GemsHeaderLbl.Size = UDim2.new(0.16, 0, 1, 0)
+GemsHeaderLbl.Position = UDim2.new(0.28, 0, 0, 0)
+GemsHeaderLbl.BackgroundTransparency = 1
+GemsHeaderLbl.Text = "💠 0 Gems"
+GemsHeaderLbl.TextColor3 = C_DIAMOND
+GemsHeaderLbl.Font = Enum.Font.GothamBlack
+GemsHeaderLbl.TextSize = 12
+GemsHeaderLbl.TextXAlignment = Enum.TextXAlignment.Center
+GemsHeaderLbl.Parent = Header
+
+local UpdateLogBtn = Instance.new("TextButton")
+UpdateLogBtn.Size = UDim2.new(0, 68, 0, 28)
+UpdateLogBtn.Position = UDim2.new(1, -318, 0.5, -14)
+UpdateLogBtn.BackgroundColor3 = C_PURPLE
+UpdateLogBtn.Text = "📜 LOG"
+UpdateLogBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+UpdateLogBtn.Font = Enum.Font.GothamBlack
+UpdateLogBtn.TextSize = 10
+UpdateLogBtn.Parent = Header
+Instance.new("UICorner", UpdateLogBtn).CornerRadius = UDim.new(0, 7)
+AttachButtonBounce(UpdateLogBtn)
+
+local ModeBtn = Instance.new("TextButton")
+ModeBtn.Size = UDim2.new(0, 104, 0, 28)
+ModeBtn.Position = UDim2.new(1, -244, 0.5, -14)
+ModeBtn.BackgroundColor3 = C_GREEN
+ModeBtn.Text = "🟢 NORMAL"
+ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ModeBtn.Font = Enum.Font.GothamBlack
+ModeBtn.TextSize = 10
+ModeBtn.Parent = Header
+Instance.new("UICorner", ModeBtn).CornerRadius = UDim.new(0, 7)
+AttachButtonBounce(ModeBtn)
+
+local RenderBtn = Instance.new("TextButton")
+RenderBtn.Size = UDim2.new(0, 94, 0, 28)
+RenderBtn.Position = UDim2.new(1, -134, 0.5, -14)
+RenderBtn.BackgroundColor3 = C_CARD
+RenderBtn.Text = "🧊 3D: ON"
+RenderBtn.TextColor3 = Color3.fromRGB(160, 210, 255)
+RenderBtn.Font = Enum.Font.GothamBold
+RenderBtn.TextSize = 10
+RenderBtn.Parent = Header
+Instance.new("UICorner", RenderBtn).CornerRadius = UDim.new(0, 7)
+local RStroke = Instance.new("UIStroke", RenderBtn)
+RStroke.Color = C_BORDER
+AttachButtonBounce(RenderBtn)
+
+RenderBtn.MouseButton1Click:Connect(function()
+    State.Render3DOff = not State.Render3DOff
+    pcall(function() RunService:Set3dRenderingEnabled(not State.Render3DOff) end)
+    RenderBtn.Text = State.Render3DOff and "❄️ 3D: OFF" or "🧊 3D: ON"
+    RenderBtn.TextColor3 = State.Render3DOff and C_GREEN or Color3.fromRGB(160, 210, 255)
+end)
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -34, 0.5, -14)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(185, 45, 60)
+CloseBtn.Text = "✕"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.TextSize = 13
+CloseBtn.Parent = Header
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 7)
+AttachButtonBounce(CloseBtn)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    Root.Visible = false
+    OpenPill.Visible = true
+    SaveData()
+end)
+
+OpenPill.MouseButton1Click:Connect(function()
+    Root.Visible = true
+    OpenPill.Visible = false
+end)
+
+--// UPDATE LOG MODAL POPUP
+local UpdateModalOverlay = Instance.new("Frame")
+UpdateModalOverlay.Size = UDim2.new(1, 0, 1, 0)
+UpdateModalOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+UpdateModalOverlay.BackgroundTransparency = 0.35
+UpdateModalOverlay.ZIndex = 40
+UpdateModalOverlay.Visible = false
+UpdateModalOverlay.Parent = Root
+
+local UpdateModal = Instance.new("Frame")
+UpdateModal.Size = UDim2.new(0.64, 0, 0.78, 0)
+UpdateModal.Position = UDim2.new(0.5, 0, 0.5, 0)
+UpdateModal.AnchorPoint = Vector2.new(0.5, 0.5)
+UpdateModal.BackgroundColor3 = C_SURFACE
+UpdateModal.ZIndex = 41
+UpdateModal.Parent = UpdateModalOverlay
+Instance.new("UICorner", UpdateModal).CornerRadius = UDim.new(0, 14)
+local UMStroke = Instance.new("UIStroke", UpdateModal)
+UMStroke.Color = C_GOLD
+UMStroke.Thickness = 2
+ApplyCardGradient(UpdateModal, Color3.fromRGB(20, 23, 34), Color3.fromRGB(9, 10, 14))
+
+local UMTitle = Instance.new("TextLabel")
+UMTitle.Size = UDim2.new(1, -24, 0, 38)
+UMTitle.Position = UDim2.new(0, 14, 0, 8)
+UMTitle.BackgroundTransparency = 1
+UMTitle.Text = "🚀 WHAT'S NEW IN AMOLED SLOTS " .. SCRIPT_VERSION
+UMTitle.TextColor3 = C_GOLD
+UMTitle.Font = Enum.Font.GothamBlack
+UMTitle.TextSize = 15
+UMTitle.TextXAlignment = Enum.TextXAlignment.Left
+UMTitle.ZIndex = 42
+UMTitle.Parent = UpdateModal
+
+local UMScroll = Instance.new("ScrollingFrame")
+UMScroll.Size = UDim2.new(1, -28, 1, -104)
+UMScroll.Position = UDim2.new(0, 14, 0, 48)
+UMScroll.BackgroundTransparency = 1
+UMScroll.ScrollBarThickness = 3
+UMScroll.CanvasSize = UDim2.new(0, 0, 0, #UPDATE_LOG_NOTES * 38)
+UMScroll.ZIndex = 42
+UMScroll.Parent = UpdateModal
+
+for idx, line in ipairs(UPDATE_LOG_NOTES) do
+    local noteLbl = Instance.new("TextLabel")
+    noteLbl.Size = UDim2.new(1, -8, 0, 34)
+    noteLbl.Position = UDim2.new(0, 4, 0, (idx - 1) * 36)
+    noteLbl.BackgroundTransparency = 1
+    noteLbl.Text = line
+    noteLbl.TextColor3 = Color3.fromRGB(230, 235, 245)
+    noteLbl.Font = Enum.Font.GothamSemibold
+    noteLbl.TextSize = 11
+    noteLbl.TextWrapped = true
+    noteLbl.TextXAlignment = Enum.TextXAlignment.Left
+    noteLbl.ZIndex = 43
+    noteLbl.Parent = UMScroll
+end
+
+local UMCloseBtn = Instance.new("TextButton")
+UMCloseBtn.Size = UDim2.new(0.45, 0, 0, 36)
+UMCloseBtn.Position = UDim2.new(0.5, 0, 1, -46)
+UMCloseBtn.AnchorPoint = Vector2.new(0.5, 0)
+UMCloseBtn.BackgroundColor3 = C_GREEN
+UMCloseBtn.Text = "AWESOME — LET'S SPIN!"
+UMCloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+UMCloseBtn.Font = Enum.Font.GothamBlack
+UMCloseBtn.TextSize = 12
+UMCloseBtn.ZIndex = 43
+UMCloseBtn.Parent = UpdateModal
+Instance.new("UICorner", UMCloseBtn).CornerRadius = UDim.new(0, 9)
+AttachButtonBounce(UMCloseBtn)
+
+local function ShowUpdateModal()
+    UpdateModalOverlay.Visible = true
+    UpdateModal.Size = UDim2.new(0.54, 0, 0.66, 0)
+    TweenService:Create(
+        UpdateModal,
+        TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        { Size = UDim2.new(0.64, 0, 0.78, 0) }
+    ):Play()
+end
+
+UMCloseBtn.MouseButton1Click:Connect(function()
+    UpdateModalOverlay.Visible = false
+end)
+
+UpdateLogBtn.MouseButton1Click:Connect(ShowUpdateModal)
+
+--// SPLIT WORKSPACE
+local Workspace = Instance.new("Frame")
+Workspace.Size = UDim2.new(1, 0, 1, -46)
+Workspace.Position = UDim2.new(0, 0, 0, 46)
+Workspace.BackgroundTransparency = 1
+Workspace.Parent = Container
+
+--// LEFT COLUMN
+local LeftCol = Instance.new("Frame")
+LeftCol.Name = "StaticSlotColumn"
+LeftCol.Size = UDim2.new(0.465, 0, 1, 0)
+LeftCol.BackgroundTransparency = 1
+LeftCol.Parent = Workspace
+
+local Dash = Instance.new("Frame")
+Dash.Size = UDim2.new(1, 0, 0, 62)
+Dash.BackgroundColor3 = C_SURFACE
+Dash.Parent = LeftCol
+Instance.new("UICorner", Dash).CornerRadius = UDim.new(0, 10)
+local DStroke = Instance.new("UIStroke", Dash)
+DStroke.Color = C_BORDER
+ApplyCardGradient(Dash, Color3.fromRGB(16, 19, 26), Color3.fromRGB(10, 11, 15))
+
+local CashLbl = Instance.new("TextLabel")
+CashLbl.Size = UDim2.new(0.58, -10, 0.5, 0)
+CashLbl.Position = UDim2.new(0, 12, 0, 2)
+CashLbl.BackgroundTransparency = 1
+CashLbl.Text = "💰 $100"
+CashLbl.TextColor3 = C_GREEN
+CashLbl.Font = Enum.Font.GothamBlack
+CashLbl.TextSize = 18
+CashLbl.TextXAlignment = Enum.TextXAlignment.Left
+CashLbl.Parent = Dash
+
+local MultLbl = Instance.new("TextLabel")
+MultLbl.Size = UDim2.new(0.42, -12, 0.5, 0)
+MultLbl.Position = UDim2.new(0.58, 0, 0, 2)
+MultLbl.BackgroundTransparency = 1
+MultLbl.Text = "⚡ 0.65x Mult"
+MultLbl.TextColor3 = C_GOLD
+MultLbl.Font = Enum.Font.GothamBold
+MultLbl.TextSize = 12
+MultLbl.TextXAlignment = Enum.TextXAlignment.Right
+MultLbl.Parent = Dash
+
+local SubDashLbl = Instance.new("TextLabel")
+SubDashLbl.Size = UDim2.new(1, -24, 0.44, 0)
+SubDashLbl.Position = UDim2.new(0, 12, 0.52, 0)
+SubDashLbl.BackgroundTransparency = 1
+SubDashLbl.Text = "🔄 Reb: 0 | 👑 Pres: 0 | 🔮 0 PT | 🌱 Novice Spinner"
+SubDashLbl.TextColor3 = Color3.fromRGB(180, 185, 200)
+SubDashLbl.Font = Enum.Font.GothamSemibold
+SubDashLbl.TextSize = 10
+SubDashLbl.TextXAlignment = Enum.TextXAlignment.Left
+SubDashLbl.Parent = Dash
+
+--// PINNED REEL MACHINE BOX
+local MachineBox = Instance.new("Frame")
+MachineBox.Size = UDim2.new(1, 0, 0, 122)
+MachineBox.Position = UDim2.new(0, 0, 0, 68)
+MachineBox.BackgroundColor3 = C_SURFACE
+MachineBox.ClipsDescendants = true
+MachineBox.Parent = LeftCol
+Instance.new("UICorner", MachineBox).CornerRadius = UDim.new(0, 12)
+local MachineStroke = Instance.new("UIStroke", MachineBox)
+MachineStroke.Color = C_GOLD
+MachineStroke.Thickness = 1.5
+ApplyCardGradient(MachineBox, Color3.fromRGB(18, 20, 28), Color3.fromRGB(9, 10, 14))
+
+local ReelsArea = Instance.new("Frame")
+ReelsArea.Size = UDim2.new(1, -14, 0, 82)
+ReelsArea.Position = UDim2.new(0, 7, 0, 7)
+ReelsArea.BackgroundTransparency = 1
+ReelsArea.Parent = MachineBox
+
+local function SpawnFloatingWinText(textStr, color)
+    local pop = Instance.new("TextLabel")
+    pop.Size = UDim2.new(0.8, 0, 0, 28)
+    pop.Position = UDim2.new(0.5, 0, 0.45, 0)
+    pop.AnchorPoint = Vector2.new(0.5, 0.5)
+    pop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    pop.BackgroundTransparency = 0.25
+    pop.Text = textStr
+    pop.TextColor3 = color
+    pop.Font = Enum.Font.GothamBlack
+    pop.TextSize = 14
+    pop.ZIndex = 15
+    pop.Parent = MachineBox
+    Instance.new("UICorner", pop).CornerRadius = UDim.new(1, 0)
+    local st = Instance.new("UIStroke", pop)
+    st.Color = color
+    st.Thickness = 1.5
+
+    TweenService:Create(
+        pop,
+        TweenInfo.new(0.85, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { Position = UDim2.new(0.5, 0, 0.12, 0), TextTransparency = 1, BackgroundTransparency = 1 }
+    ):Play()
+    TweenService:Create(st, TweenInfo.new(0.85), { Transparency = 1 }):Play()
+    task.delay(0.9, function()
+        if pop then pop:Destroy() end
+    end)
+end
+
+local Reels = {}
+local function RebuildReels()
+    for _, c in ipairs(ReelsArea:GetChildren()) do c:Destroy() end
+    Reels = {}
+
+    local count = State.SlotCount
+    local gap = count >= 8 and 3 or 5
+    local wScale = 1 / count
+    local fontSize = count <= 4 and 34 or (count <= 6 and 25 or (count <= 8 and 19 or 15))
+
+    for i = 1, count do
+        local Window = Instance.new("Frame")
+        Window.Size = UDim2.new(wScale, -gap, 1, 0)
+        Window.Position = UDim2.new(wScale * (i - 1), math.floor(gap / 2), 0, 0)
+        Window.BackgroundColor3 = C_BLACK
+        Window.ClipsDescendants = true
+        Window.Parent = ReelsArea
+        Instance.new("UICorner", Window).CornerRadius = UDim.new(0, 8)
+        local WStroke = Instance.new("UIStroke", Window)
+        WStroke.Color = C_BORDER
+        WStroke.Thickness = 1
+
+        local Payline = Instance.new("Frame")
+        Payline.Size = UDim2.new(1, 0, 0, 2)
+        Payline.Position = UDim2.new(0, 0, 0.5, -1)
+        Payline.BackgroundColor3 = C_GOLD
+        Payline.BackgroundTransparency = 0.72
+        Payline.BorderSizePixel = 0
+        Payline.ZIndex = 3
+        Payline.Parent = Window
+
+        local Strip = Instance.new("Frame")
+        Strip.Size = UDim2.new(1, 0, 3, 0)
+        Strip.Position = UDim2.new(0, 0, -1, 0)
+        Strip.BackgroundTransparency = 1
+        Strip.Parent = Window
+
+        local Cells = {}
+        for s = 1, 3 do
+            local Lbl = Instance.new("TextLabel")
+            Lbl.Size = UDim2.new(1, 0, 1/3, 0)
+            Lbl.Position = UDim2.new(0, 0, (s - 1)/3, 0)
+            Lbl.BackgroundTransparency = 1
+            Lbl.Text = "7️⃣"
+            Lbl.TextSize = fontSize
+            Lbl.Font = Enum.Font.GothamBold
+            Lbl.Parent = Strip
+            Cells[s] = Lbl
+        end
+
+        Reels[i] = {
+            Window = Window,
+            Stroke = WStroke,
+            Strip = Strip,
+            TopCell = Cells[1],
+            MidCell = Cells[2],
+            BotCell = Cells[3]
+        }
+    end
+end
+
+RebuildReels()
+
+local BannerLbl = Instance.new("TextLabel")
+BannerLbl.Size = UDim2.new(1, -14, 0, 24)
+BannerLbl.Position = UDim2.new(0, 7, 1, -26)
+BannerLbl.BackgroundTransparency = 1
+BannerLbl.Text = TamperDetected
+    and "🚨 TAMPER DETECTED! Save reset!"
+    or "🍒 1.6x • 🍋 3.2x • 💎 9x • 7️⃣ 25x"
+BannerLbl.TextColor3 = TamperDetected and C_RED or Color3.fromRGB(215, 220, 235)
+BannerLbl.Font = Enum.Font.GothamBold
+BannerLbl.TextSize = 10
+BannerLbl.Parent = MachineBox
+
+--// Pity & Overdrive Fever Progress Bars
+local PityBarsCard = Instance.new("Frame")
+PityBarsCard.Size = UDim2.new(1, 0, 0, 48)
+PityBarsCard.Position = UDim2.new(0, 0, 0, 196)
+PityBarsCard.BackgroundColor3 = C_SURFACE
+PityBarsCard.Parent = LeftCol
+Instance.new("UICorner", PityBarsCard).CornerRadius = UDim.new(0, 9)
+local PBStroke = Instance.new("UIStroke", PityBarsCard)
+PBStroke.Color = C_BORDER
+
+local PityStatusLbl = Instance.new("TextLabel")
+PityStatusLbl.Size = UDim2.new(1, -16, 0, 20)
+PityStatusLbl.Position = UDim2.new(0, 8, 0, 3)
+PityStatusLbl.BackgroundTransparency = 1
+PityStatusLbl.Text = "✨ Gold: 0/10  |  💎 Dia: 0/100  |  🔥 Fever: 0/25"
+PityStatusLbl.TextColor3 = C_DIAMOND
+PityStatusLbl.Font = Enum.Font.GothamBold
+PityStatusLbl.TextSize = 10
+PityStatusLbl.TextXAlignment = Enum.TextXAlignment.Left
+PityStatusLbl.Parent = PityBarsCard
+
+local FeverBarBg = Instance.new("Frame")
+FeverBarBg.Size = UDim2.new(1, -16, 0, 12)
+FeverBarBg.Position = UDim2.new(0, 8, 0, 27)
+FeverBarBg.BackgroundColor3 = C_BLACK
+FeverBarBg.Parent = PityBarsCard
+Instance.new("UICorner", FeverBarBg).CornerRadius = UDim.new(1, 0)
+
+local FeverBarFill = Instance.new("Frame")
+FeverBarFill.Size = UDim2.new(0, 0, 1, 0)
+FeverBarFill.BackgroundColor3 = C_ORANGE
+FeverBarFill.Parent = FeverBarBg
+Instance.new("UICorner", FeverBarFill).CornerRadius = UDim.new(1, 0)
+
+--// Manual Bid Bar
+local BidBar = Instance.new("Frame")
+BidBar.Size = UDim2.new(1, 0, 0, 40)
+BidBar.Position = UDim2.new(0, 0, 0, 250)
+BidBar.BackgroundColor3 = C_SURFACE
+BidBar.Parent = LeftCol
+Instance.new("UICorner", BidBar).CornerRadius = UDim.new(0, 9)
+local BidBarStroke = Instance.new("UIStroke", BidBar)
+BidBarStroke.Color = C_BORDER
+
+local BidRangeLbl = Instance.new("TextLabel")
+BidRangeLbl.Size = UDim2.new(0.32, -6, 1, 0)
+BidRangeLbl.Position = UDim2.new(0, 8, 0, 0)
+BidRangeLbl.BackgroundTransparency = 1
+BidRangeLbl.Text = "⚡ BID\n$10-$10"
+BidRangeLbl.TextColor3 = C_GOLD
+BidRangeLbl.Font = Enum.Font.GothamBold
+BidRangeLbl.TextSize = 9
+BidRangeLbl.TextXAlignment = Enum.TextXAlignment.Left
+BidRangeLbl.Parent = BidBar
+
+local BidInputBox = Instance.new("TextBox")
+BidInputBox.Size = UDim2.new(0.28, -4, 0, 26)
+BidInputBox.Position = UDim2.new(0.32, 0, 0.5, -13)
+BidInputBox.BackgroundColor3 = C_BLACK
+BidInputBox.PlaceholderText = "Auto Max"
+BidInputBox.Text = ""
+BidInputBox.TextColor3 = C_GREEN
+BidInputBox.PlaceholderColor3 = Color3.fromRGB(135, 145, 165)
+BidInputBox.Font = Enum.Font.GothamBlack
+BidInputBox.TextSize = 11
+BidInputBox.ClearTextOnFocus = false
+BidInputBox.Parent = BidBar
+Instance.new("UICorner", BidInputBox).CornerRadius = UDim.new(0, 6)
+local BidBoxStroke = Instance.new("UIStroke", BidInputBox)
+BidBoxStroke.Color = C_BLUE
+
+local function MakeBidPresetBtn(xScale, wScale, bgColor, label)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(wScale, -3, 0, 26)
+    b.Position = UDim2.new(xScale, 2, 0.5, -13)
+    b.BackgroundColor3 = bgColor
+    b.Text = label
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 9
+    b.Parent = BidBar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    AttachButtonBounce(b)
+    return b
+end
+
+local MinBidBtn  = MakeBidPresetBtn(0.61, 0.125, C_CARD, "MIN")
+local HalfBidBtn = MakeBidPresetBtn(0.738, 0.125, C_CARD, "50%")
+local AutoBidBtn = MakeBidPresetBtn(0.866, 0.125, C_BLUE, "MAX")
+
+--// Spin, Auto & Auto-Rebirth Buttons
+local ControlsRow = Instance.new("Frame")
+ControlsRow.Size = UDim2.new(1, 0, 0, 42)
+ControlsRow.Position = UDim2.new(0, 0, 0, 296)
+ControlsRow.BackgroundTransparency = 1
+ControlsRow.Parent = LeftCol
+
+local SpinBtn = Instance.new("TextButton")
+SpinBtn.Size = UDim2.new(0.48, 0, 1, 0)
+SpinBtn.BackgroundColor3 = C_GREEN
+SpinBtn.Text = "🎲 FREE SPIN"
+SpinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpinBtn.Font = Enum.Font.GothamBlack
+SpinBtn.TextSize = 12
+SpinBtn.Parent = ControlsRow
+Instance.new("UICorner", SpinBtn).CornerRadius = UDim.new(0, 9)
+AttachButtonBounce(SpinBtn)
+
+local AutoBtn = Instance.new("TextButton")
+AutoBtn.Size = UDim2.new(0.25, -4, 1, 0)
+AutoBtn.Position = UDim2.new(0.49, 0, 0, 0)
+AutoBtn.BackgroundColor3 = C_CARD
+AutoBtn.Text = "🔁 AUTO\nOFF"
+AutoBtn.TextColor3 = Color3.fromRGB(210, 215, 225)
+AutoBtn.Font = Enum.Font.GothamBold
+AutoBtn.TextSize = 10
+AutoBtn.Parent = ControlsRow
+Instance.new("UICorner", AutoBtn).CornerRadius = UDim.new(0, 9)
+AttachButtonBounce(AutoBtn)
+
+local AutoRebBtn = Instance.new("TextButton")
+AutoRebBtn.Size = UDim2.new(0.25, 0, 1, 0)
+AutoRebBtn.Position = UDim2.new(0.75, 0, 0, 0)
+AutoRebBtn.BackgroundColor3 = C_CARD
+AutoRebBtn.Text = "🔄 A-REB\nOFF"
+AutoRebBtn.TextColor3 = Color3.fromRGB(210, 215, 225)
+AutoRebBtn.Font = Enum.Font.GothamBold
+AutoRebBtn.TextSize = 10
+AutoRebBtn.Parent = ControlsRow
+Instance.new("UICorner", AutoRebBtn).CornerRadius = UDim.new(0, 9)
+AttachButtonBounce(AutoRebBtn)
+
+--// Live Telemetry Card
+local TelemetryCard = Instance.new("Frame")
+TelemetryCard.Size = UDim2.new(1, 0, 1, -344)
+TelemetryCard.Position = UDim2.new(0, 0, 0, 344)
+TelemetryCard.BackgroundColor3 = C_SURFACE
+TelemetryCard.Parent = LeftCol
+Instance.new("UICorner", TelemetryCard).CornerRadius = UDim.new(0, 10)
+local TelStroke = Instance.new("UIStroke", TelemetryCard)
+TelStroke.Color = C_BORDER
+
+local TelemetryLbl = Instance.new("TextLabel")
+TelemetryLbl.Size = UDim2.new(1, -20, 1, -10)
+TelemetryLbl.Position = UDim2.new(0, 10, 0, 5)
+TelemetryLbl.BackgroundTransparency = 1
+TelemetryLbl.Text = "📊 LIVE TELEMETRY\n🍀 Net Luck: +0.0%  |  ⏱️ Speed: 1.15s\n🏆 Biggest Win: $0  |  🎰 Total Spins: 0"
+TelemetryLbl.TextColor3 = Color3.fromRGB(185, 195, 215)
+TelemetryLbl.Font = Enum.Font.GothamSemibold
+TelemetryLbl.TextSize = 10
+TelemetryLbl.TextXAlignment = Enum.TextXAlignment.Left
+TelemetryLbl.TextYAlignment = Enum.TextYAlignment.Center
+TelemetryLbl.Parent = TelemetryCard
+
+--// RIGHT COLUMN
+local RightCol = Instance.new("Frame")
+RightCol.Name = "IndependentTabColumn"
+RightCol.Size = UDim2.new(0.525, 0, 1, 0)
+RightCol.Position = UDim2.new(0.475, 0, 0, 0)
+RightCol.BackgroundTransparency = 1
+RightCol.Parent = Workspace
+
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, 0, 0, 32)
+TabBar.BackgroundTransparency = 1
+TabBar.Parent = RightCol
+
+local isAdmin = IsAuthorizedAdmin()
+local tabDefs = {
+    { Key = "UPG",    Label = "⬆️ UPG",   Color = C_BLUE },
+    { Key = "TECH",   Label = "🧬 TECH",  Color = C_PURPLE },
+    { Key = "QUESTS", Label = "📋 QUEST", Color = C_DIAMOND },
+    { Key = "PASSES", Label = "💎 PASS",  Color = C_GOLD },
+    { Key = "TITLES", Label = "🏅 TITLE", Color = C_ORANGE },
+    { Key = "BOARD",  Label = "🏆 RANK",  Color = C_GREEN }
+}
+if isAdmin then
+    table.insert(tabDefs, { Key = "ADMIN", Label = "🛠️ ADM", Color = Color3.fromRGB(25, 145, 185) })
+end
+
+local tabGap = 0.01
+local singleTabW = (1 - (tabGap * (#tabDefs - 1))) / #tabDefs
+local TabButtons = {}
+
+for i, def in ipairs(tabDefs) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(singleTabW, 0, 1, 0)
+    b.Position = UDim2.new((singleTabW + tabGap) * (i - 1), 0, 0, 0)
+    b.BackgroundColor3 = (i == 1) and def.Color or C_CARD
+    b.Text = def.Label
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 10
+    b.Parent = TabBar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+    AttachButtonBounce(b)
+    TabButtons[def.Key] = { Btn = b, ActiveColor = def.Color }
+end
+
+local function CreateRightScroll(canvasH, visible)
+    local sf = Instance.new("ScrollingFrame")
+    sf.Size = UDim2.new(1, 0, 1, -38)
+    sf.Position = UDim2.new(0, 0, 0, 38)
+    sf.BackgroundTransparency = 1
+    sf.ScrollBarThickness = 3
+    sf.CanvasSize = UDim2.new(0, 0, 0, canvasH)
+    sf.Visible = visible
+    sf.Parent = RightCol
+    return sf
+end
+
+local UpgradesPage = CreateRightScroll(320, true)
+local TechPage     = CreateRightScroll(420, false)
+local QuestsPage   = CreateRightScroll(920, false)
+local PassesPage   = CreateRightScroll(530, false)
+local TitlesPage   = CreateRightScroll(510, false)
+local BoardPage    = CreateRightScroll(420, false)
+local AdminPage    = isAdmin and CreateRightScroll(520, false) or nil
+
+local PagesByKey = {
+    UPG = UpgradesPage,
+    TECH = TechPage,
+    QUESTS = QuestsPage,
+    PASSES = PassesPage,
+    TITLES = TitlesPage,
+    BOARD = BoardPage,
+    ADMIN = AdminPage
+}
+
+local function SwitchTab(key)
+    for k, page in pairs(PagesByKey) do
+        if page then
+            page.Visible = (k == key)
+            if k == key then
+                page.CanvasPosition = Vector2.new(0, 0)
+            end
+        end
+    end
+    for k, info in pairs(TabButtons) do
+        info.Btn.BackgroundColor3 = (k == key) and info.ActiveColor or C_CARD
+    end
+end
+
+for key, info in pairs(TabButtons) do
+    info.Btn.MouseButton1Click:Connect(function()
+        SwitchTab(key)
+    end)
+end
+
+--// Upgrade Card Builder
+local function CreateUpgradeCard(parent, yPos, xScale, wScale, color, title, sub, hasMaxBtn)
+    local card = Instance.new("Frame")
+    card.Position = UDim2.new(xScale, 0, 0, yPos)
+    card.Size = UDim2.new(wScale, 0, 0, 56)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = parent
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 9)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = color
+    stroke.Thickness = 1
+
+    local mainBtn = Instance.new("TextButton")
+    mainBtn.Size = hasMaxBtn and UDim2.new(1, -52, 1, 0) or UDim2.new(1, 0, 1, 0)
+    mainBtn.BackgroundTransparency = 1
+    mainBtn.Text = ""
+    mainBtn.Parent = card
+    AttachButtonBounce(mainBtn)
+
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(1, -10, 0.48, 0)
+    tLbl.Position = UDim2.new(0, 9, 0, 4)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = title
+    tLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 11
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = mainBtn
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(1, -10, 0.48, 0)
+    sLbl.Position = UDim2.new(0, 9, 0.48, 0)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = sub
+    sLbl.TextColor3 = Color3.fromRGB(185, 192, 210)
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextSize = 10
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = mainBtn
+
+    local maxBtn = nil
+    if hasMaxBtn then
+        maxBtn = Instance.new("TextButton")
+        maxBtn.Size = UDim2.new(0, 44, 1, -10)
+        maxBtn.Position = UDim2.new(1, -48, 0, 5)
+        maxBtn.BackgroundColor3 = color
+        maxBtn.Text = "MAX"
+        maxBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        maxBtn.Font = Enum.Font.GothamBlack
+        maxBtn.TextSize = 10
+        maxBtn.Parent = card
+        Instance.new("UICorner", maxBtn).CornerRadius = UDim.new(0, 7)
+        AttachButtonBounce(maxBtn)
+    end
+
+    return card, mainBtn, tLbl, sLbl, maxBtn, stroke
+end
+
+--// QOL QUICK BUY-ALL BAR + UPGRADES TAB
+local BuyAllQOLBtn = Instance.new("TextButton")
+BuyAllQOLBtn.Size = UDim2.new(1, 0, 0, 32)
+BuyAllQOLBtn.BackgroundColor3 = C_GREEN
+BuyAllQOLBtn.Text = "⚡ QOL: SMART BUY ALL AFFORDABLE UPGRADES"
+BuyAllQOLBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+BuyAllQOLBtn.Font = Enum.Font.GothamBlack
+BuyAllQOLBtn.TextSize = 10
+BuyAllQOLBtn.Parent = UpgradesPage
+Instance.new("UICorner", BuyAllQOLBtn).CornerRadius = UDim.new(0, 8)
+AttachButtonBounce(BuyAllQOLBtn)
+
+local _, BetBtn, BetTitle, BetSub, BetMaxBtn = CreateUpgradeCard(
+    UpgradesPage, 38, 0, 0.49, C_BLUE, "⬆️ Max Bet (Lv.1)", "Cost: $120", true
+)
+
+local _, SlotBtn, SlotTitle, SlotSub = CreateUpgradeCard(
+    UpgradesPage, 38, 0.51, 0.49, C_GOLD, "🎰 Reels (3/10)", "+1 Reel: $20.0K", false
+)
+
+local _, LuckBtn, LuckTitle, LuckSub, LuckMaxBtn = CreateUpgradeCard(
+    UpgradesPage, 100, 0, 0.49, C_PURPLE, "🍀 Luck (Lv.1)", "Cost: $250 (∞)", true
+)
+
+local _, SpeedBtn, SpeedTitle, SpeedSub, SpeedMaxBtn = CreateUpgradeCard(
+    UpgradesPage, 100, 0.51, 0.49, Color3.fromRGB(35, 165, 185), "⚡ Speed (Lv.1/25)", "Cost: $300", true
+)
+
+local _, GoldPityBtn, GoldPityTitle, GoldPitySub = CreateUpgradeCard(
+    UpgradesPage, 162, 0, 0.49, C_GOLD, "✨ Gold Roll (0/5)", "Every 10 Spins • $5.0K", false
+)
+
+local _, DiaPityBtn, DiaPityTitle, DiaPitySub = CreateUpgradeCard(
+    UpgradesPage, 162, 0.51, 0.49, C_DIAMOND, "💎 Dia Roll (0/45)", "Every 100 Spins • $18.0K", false
+)
+
+local _, RebBtn, RebTitle, RebSub = CreateUpgradeCard(
+    UpgradesPage, 226, 0, 0.49, C_ORANGE, "🔄 REBIRTH (0)", "Req: $250.00K (+0.75x)", false
+)
+
+local _, PresBtn, PresTitle, PresSub = CreateUpgradeCard(
+    UpgradesPage, 226, 0.51, 0.49, C_PINK, "👑 PRESTIGE (0)", "Req: 8 Reb (+1 PT)", false
+)
+
+--// BRANCHING TECH TREE TAB
+local TechTreeNodes = {
+    { Key = "Overclock", Branch = "ROOT",     ReqKey = nil,         Title = "⚡ [ROOT] Core Overclock",  Desc = "+35% Total Cash Mult (Unlocks All 3 Branches)", BaseCost = 1, CostMult = 1.65, Y = 0,   X = 0,    W = 1,    Color = C_GOLD },
+    { Key = "Clover",    Branch = "FORTUNE",  ReqKey = "Overclock", Title = "🍀 Fortune I: Clover",     Desc = "+5.0% Net Luck per rank",                        BaseCost = 1, CostMult = 1.80, Y = 66,  X = 0,    W = 0.32, Color = C_GREEN },
+    { Key = "Resonance", Branch = "ECONOMY",  ReqKey = "Overclock", Title = "💎 Economy I: Resonance",  Desc = "+25% payout on 3+ combos",                       BaseCost = 1, CostMult = 1.75, Y = 66,  X = 0.34, W = 0.32, Color = C_BLUE },
+    { Key = "Cashback",  Branch = "SURVIVAL", ReqKey = "Overclock", Title = "💸 Survival I: Cashback",  Desc = "Hardmode lost-bid refund (up to 85%)",           BaseCost = 1, CostMult = 1.85, Y = 66,  X = 0.68, W = 0.32, Color = C_ORANGE },
+    { Key = "Prismatic", Branch = "FORTUNE",  ReqKey = "Clover",    Title = "🌈 Fortune II: Prismatic", Desc = "+4.0% Rare Symbol Luck per rank",                BaseCost = 3, CostMult = 2.00, Y = 132, X = 0,    W = 0.32, Color = C_GREEN },
+    { Key = "Vault",     Branch = "ECONOMY",  ReqKey = "Resonance", Title = "🏦 Economy II: Vault",     Desc = "+0.25% Bank Interest on every win",              BaseCost = 3, CostMult = 2.00, Y = 132, X = 0.34, W = 0.32, Color = C_BLUE },
+    { Key = "Mastery",   Branch = "SURVIVAL", ReqKey = "Cashback",  Title = "🔄 Survival II: Mastery",  Desc = "Keep upgrade levels on Rebirth (up to 90%)",     BaseCost = 3, CostMult = 2.10, Y = 132, X = 0.68, W = 0.32, Color = C_ORANGE }
+}
+
+local function GetTechCost(node)
+    return math.floor(node.BaseCost * (node.CostMult ^ State.Tech[node.Key]))
+end
+
+local function IsTechNodeUnlocked(node)
+    if not node.ReqKey then return true end
+    return (State.Tech[node.ReqKey] or 0) >= 1
+end
+
+TechPage.CanvasSize = UDim2.new(0, 0, 0, 210)
+local TechUI = {}
+
+for _, node in ipairs(TechTreeNodes) do
+    local card = Instance.new("Frame")
+    card.Position = UDim2.new(node.X, 0, 0, node.Y)
+    card.Size = UDim2.new(node.W, 0, 0, 58)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = TechPage
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = node.Color
+    stroke.Thickness = 1.2
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 1, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = card
+    AttachButtonBounce(btn)
+
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(1, -10, 0.45, 0)
+    tLbl.Position = UDim2.new(0, 6, 0, 3)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = node.Title
+    tLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = node.W == 1 and 11 or 9
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = btn
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(1, -10, 0.50, 0)
+    sLbl.Position = UDim2.new(0, 6, 0.46, 0)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = node.Desc
+    sLbl.TextColor3 = Color3.fromRGB(185, 195, 215)
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextSize = node.W == 1 and 10 or 8
+    sLbl.TextWrapped = true
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = btn
+
+    TechUI[node.Key] = { Card = card, Stroke = stroke, Title = tLbl, Sub = sLbl, Node = node }
+
+    btn.MouseButton1Click:Connect(function()
+        if not VerifyRuntimeIntegrity() then return end
+        if not IsTechNodeUnlocked(node) then
+            BannerLbl.Text = "🔒 Upgrade parent Tech Tree node first!"
+            BannerLbl.TextColor3 = C_RED
+            return
+        end
+        local cost = GetTechCost(node)
+        if State.PrestigeTokens >= cost then
+            State.PrestigeTokens -= cost
+            DataStore.Tech[node.Key] += 1
+            RefreshSeal()
+            SaveData()
+        end
+    end)
+end
+
+--// QUESTS TAB
+local LoginCard = Instance.new("Frame")
+LoginCard.Size = UDim2.new(1, 0, 0, 62)
+LoginCard.BackgroundColor3 = C_SURFACE
+LoginCard.Parent = QuestsPage
+Instance.new("UICorner", LoginCard).CornerRadius = UDim.new(0, 9)
+local LoginStroke = Instance.new("UIStroke", LoginCard)
+LoginStroke.Color = C_GOLD
+LoginStroke.Thickness = 1.3
+
+local LoginTitleLbl = Instance.new("TextLabel")
+LoginTitleLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+LoginTitleLbl.Position = UDim2.new(0, 10, 0, 4)
+LoginTitleLbl.BackgroundTransparency = 1
+LoginTitleLbl.Text = "📅 DAILY LOGIN REWARD (Day 1 Streak)"
+LoginTitleLbl.TextColor3 = C_GOLD
+LoginTitleLbl.Font = Enum.Font.GothamBlack
+LoginTitleLbl.TextSize = 11
+LoginTitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+LoginTitleLbl.Parent = LoginCard
+
+local LoginSubLbl = Instance.new("TextLabel")
+LoginSubLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+LoginSubLbl.Position = UDim2.new(0, 10, 0.48, 0)
+LoginSubLbl.BackgroundTransparency = 1
+LoginSubLbl.Text = "Log in daily for escalating Gem rewards (Up to 100 💠 on Day 7!)"
+LoginSubLbl.TextColor3 = Color3.fromRGB(190, 195, 210)
+LoginSubLbl.Font = Enum.Font.GothamMedium
+LoginSubLbl.TextSize = 9
+LoginSubLbl.TextXAlignment = Enum.TextXAlignment.Left
+LoginSubLbl.Parent = LoginCard
+
+local LoginClaimBtn = Instance.new("TextButton")
+LoginClaimBtn.Size = UDim2.new(0.28, 0, 0, 38)
+LoginClaimBtn.Position = UDim2.new(0.70, 0, 0.5, -19)
+LoginClaimBtn.BackgroundColor3 = C_GREEN
+LoginClaimBtn.Text = "CLAIM +15 💠"
+LoginClaimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+LoginClaimBtn.Font = Enum.Font.GothamBlack
+LoginClaimBtn.TextSize = 10
+LoginClaimBtn.Parent = LoginCard
+Instance.new("UICorner", LoginClaimBtn).CornerRadius = UDim.new(0, 8)
+AttachButtonBounce(LoginClaimBtn)
+
+local function ClaimDailyLogin()
+    if not VerifyRuntimeIntegrity() then return end
+    local today = GetCurrentDayKey()
+    if DataStore.Login.LastClaimDay == today then return end
+
+    if DataStore.Login.LastClaimDay == (today - 1) then
+        DataStore.Login.Streak = (DataStore.Login.Streak % 7) + 1
+    else
+        DataStore.Login.Streak = 1
+    end
+    DataStore.Login.LastClaimDay = today
+    local baseGem = DailyLoginRewards[DataStore.Login.Streak] or 15
+    local finalGem = DataStore.Passes.vip and math.ceil(baseGem * 1.25) or baseGem
+    DataStore.Gems += finalGem
+    RefreshSeal()
+    SaveData()
+    BannerLbl.Text = string.format("📅 Day %d Login Reward! +%d 💠 Gems!", DataStore.Login.Streak, finalGem)
+    BannerLbl.TextColor3 = C_GOLD
+end
+
+LoginClaimBtn.MouseButton1Click:Connect(ClaimDailyLogin)
+
+local DailySectionHeader = Instance.new("TextLabel")
+DailySectionHeader.Size = UDim2.new(1, 0, 0, 22)
+DailySectionHeader.Position = UDim2.new(0, 4, 0, 68)
+DailySectionHeader.BackgroundTransparency = 1
+DailySectionHeader.Text = "☀️ DAILY TASKS (Resets Every 24 Hours)"
+DailySectionHeader.TextColor3 = C_DIAMOND
+DailySectionHeader.Font = Enum.Font.GothamBlack
+DailySectionHeader.TextSize = 10
+DailySectionHeader.TextXAlignment = Enum.TextXAlignment.Left
+DailySectionHeader.Parent = QuestsPage
+
+local QuestUI = {}
+local cursorY = 92
+
+for _, q in ipairs(DailyQuestTemplates) do
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 52)
+    card.Position = UDim2.new(0, 0, 0, cursorY)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = QuestsPage
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = C_BORDER
+
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    tLbl.Position = UDim2.new(0, 10, 0, 3)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = q.Title
+    tLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 10
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = card
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    sLbl.Position = UDim2.new(0, 10, 0.48, 0)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = string.format("%s (0/%d)", q.Desc, q.Goal)
+    sLbl.TextColor3 = Color3.fromRGB(180, 190, 210)
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextSize = 9
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = card
+
+    local claimBtn = Instance.new("TextButton")
+    claimBtn.Size = UDim2.new(0.28, 0, 0, 32)
+    claimBtn.Position = UDim2.new(0.70, 0, 0.5, -16)
+    claimBtn.BackgroundColor3 = C_CARD
+    claimBtn.Text = string.format("+%d 💠", q.Reward)
+    claimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    claimBtn.Font = Enum.Font.GothamBlack
+    claimBtn.TextSize = 10
+    claimBtn.Parent = card
+    Instance.new("UICorner", claimBtn).CornerRadius = UDim.new(0, 7)
+    AttachButtonBounce(claimBtn)
+
+    QuestUI[q.Id] = { Stroke = stroke, Sub = sLbl, Btn = claimBtn, Template = q, Bucket = "Daily" }
+
+    claimBtn.MouseButton1Click:Connect(function()
+        if not VerifyRuntimeIntegrity() then return end
+        CheckTimersReset()
+        local prog = DataStore.Daily[q.StatKey] or 0
+        if prog >= q.Goal and not DataStore.Daily.Claimed[q.Id] then
+            DataStore.Daily.Claimed[q.Id] = true
+            local gemReward = DataStore.Passes.vip and math.ceil(q.Reward * 1.25) or q.Reward
+            DataStore.Gems += gemReward
+            RefreshSeal()
+            SaveData()
+            BannerLbl.Text = string.format("💠 Daily Quest Complete! +%d Gems!", gemReward)
+            BannerLbl.TextColor3 = C_DIAMOND
+        end
+    end)
+
+    cursorY += 57
+end
+
+local WeeklySectionHeader = Instance.new("TextLabel")
+WeeklySectionHeader.Size = UDim2.new(1, 0, 0, 24)
+WeeklySectionHeader.Position = UDim2.new(0, 4, 0, cursorY + 4)
+WeeklySectionHeader.BackgroundTransparency = 1
+WeeklySectionHeader.Text = "🗓️ WEEKLY TASKS (Big Gem Payouts • Resets Every 7 Days)"
+WeeklySectionHeader.TextColor3 = C_PURPLE
+WeeklySectionHeader.Font = Enum.Font.GothamBlack
+WeeklySectionHeader.TextSize = 10
+WeeklySectionHeader.TextXAlignment = Enum.TextXAlignment.Left
+WeeklySectionHeader.Parent = QuestsPage
+
+cursorY += 30
+
+for _, q in ipairs(WeeklyQuestTemplates) do
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 52)
+    card.Position = UDim2.new(0, 0, 0, cursorY)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = QuestsPage
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = C_PURPLE
+
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    tLbl.Position = UDim2.new(0, 10, 0, 3)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = q.Title
+    tLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 10
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = card
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    sLbl.Position = UDim2.new(0, 10, 0.48, 0)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = string.format("%s (0/%d)", q.Desc, q.Goal)
+    sLbl.TextColor3 = Color3.fromRGB(180, 190, 210)
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextSize = 9
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = card
+
+    local claimBtn = Instance.new("TextButton")
+    claimBtn.Size = UDim2.new(0.28, 0, 0, 32)
+    claimBtn.Position = UDim2.new(0.70, 0, 0.5, -16)
+    claimBtn.BackgroundColor3 = C_CARD
+    claimBtn.Text = string.format("+%d 💠", q.Reward)
+    claimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    claimBtn.Font = Enum.Font.GothamBlack
+    claimBtn.TextSize = 10
+    claimBtn.Parent = card
+    Instance.new("UICorner", claimBtn).CornerRadius = UDim.new(0, 7)
+    AttachButtonBounce(claimBtn)
+
+    QuestUI[q.Id] = { Stroke = stroke, Sub = sLbl, Btn = claimBtn, Template = q, Bucket = "Weekly" }
+
+    claimBtn.MouseButton1Click:Connect(function()
+        if not VerifyRuntimeIntegrity() then return end
+        CheckTimersReset()
+        local prog = DataStore.Weekly[q.StatKey] or 0
+        if prog >= q.Goal and not DataStore.Weekly.Claimed[q.Id] then
+            DataStore.Weekly.Claimed[q.Id] = true
+            local gemReward = DataStore.Passes.vip and math.ceil(q.Reward * 1.25) or q.Reward
+            DataStore.Gems += gemReward
+            RefreshSeal()
+            SaveData()
+            BannerLbl.Text = string.format("🏆 Weekly Quest Complete! +%d Gems!", gemReward)
+            BannerLbl.TextColor3 = C_PURPLE
+        end
+    end)
+
+    cursorY += 57
+end
+
+QuestsPage.CanvasSize = UDim2.new(0, 0, 0, cursorY + 12)
+
+--// MINIGAME PASSES TAB
+local PassUI = {}
+for idx, p in ipairs(PassCatalog) do
+    local yPos = (idx - 1) * 62
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 56)
+    card.Position = UDim2.new(0, 0, 0, yPos)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = PassesPage
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 9)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = C_GOLD
+
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    tLbl.Position = UDim2.new(0, 10, 0, 4)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text = p.Name
+    tLbl.TextColor3 = C_GOLD
+    tLbl.Font = Enum.Font.GothamBold
+    tLbl.TextSize = 11
+    tLbl.TextXAlignment = Enum.TextXAlignment.Left
+    tLbl.Parent = card
+
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    sLbl.Position = UDim2.new(0, 10, 0.48, 0)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text = p.Desc
+    sLbl.TextColor3 = Color3.fromRGB(190, 195, 210)
+    sLbl.Font = Enum.Font.GothamMedium
+    sLbl.TextSize = 9
+    sLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sLbl.Parent = card
+
+    local buyBtn = Instance.new("TextButton")
+    buyBtn.Size = UDim2.new(0.28, 0, 0, 34)
+    buyBtn.Position = UDim2.new(0.70, 0, 0.5, -17)
+    buyBtn.BackgroundColor3 = C_BLUE
+    buyBtn.Text = string.format("💠 %d", p.Cost)
+    buyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    buyBtn.Font = Enum.Font.GothamBlack
+    buyBtn.TextSize = 11
+    buyBtn.Parent = card
+    Instance.new("UICorner", buyBtn).CornerRadius = UDim.new(0, 8)
+    AttachButtonBounce(buyBtn)
+
+    PassUI[p.Id] = { Stroke = stroke, Btn = buyBtn, Pass = p }
+
+    buyBtn.MouseButton1Click:Connect(function()
+        if not VerifyRuntimeIntegrity() then return end
+        if DataStore.Passes[p.Id] then return end
+        if DataStore.Gems >= p.Cost then
+            DataStore.Gems -= p.Cost
+            DataStore.Passes[p.Id] = true
+            if p.Id == "hard_shield" then
+                DataStore.BailoutsLeft = math.min(3, DataStore.BailoutsLeft + 1)
+            end
+            RefreshSeal()
+            SaveData()
+            BannerLbl.Text = string.format("🎉 Unlocked Pass: %s!", p.Name)
+            BannerLbl.TextColor3 = C_GOLD
+        end
+    end)
+end
+
+--// TITLES TAB
+local TitleCardsUI = {}
+for idx, tObj in ipairs(Titles) do
+    local yPos = (idx - 1) * 60
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, 0, 0, 54)
+    card.Position = UDim2.new(0, 0, 0, yPos)
+    card.BackgroundColor3 = C_SURFACE
+    card.Parent = TitlesPage
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 9)
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = C_BORDER
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size = UDim2.new(0.68, 0, 0.48, 0)
+    nameLbl.Position = UDim2.new(0, 10, 0, 3)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text = tObj.Name
+    nameLbl.TextColor3 = C_GOLD
+    nameLbl.Font = Enum.Font.GothamBold
+    nameLbl.TextSize = 11
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.Parent = card
+
+    local descLbl = Instance.new("TextLabel")
+    descLbl.Size = UDim2.new(0.68, 0, 0.45, 0)
+    descLbl.Position = UDim2.new(0, 10, 0.50, 0)
+    descLbl.BackgroundTransparency = 1
+    descLbl.Text = string.format("%s • %s", tObj.BuffText, tObj.ReqText)
+    descLbl.TextColor3 = Color3.fromRGB(185, 190, 205)
+    descLbl.Font = Enum.Font.GothamMedium
+    descLbl.TextSize = 9
+    descLbl.TextXAlignment = Enum.TextXAlignment.Left
+    descLbl.Parent = card
+
+    local equipBtn = Instance.new("TextButton")
+    equipBtn.Size = UDim2.new(0.26, 0, 0, 32)
+    equipBtn.Position = UDim2.new(0.72, 0, 0.5, -16)
+    equipBtn.BackgroundColor3 = C_CARD
+    equipBtn.Text = "LOCKED"
+    equipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    equipBtn.Font = Enum.Font.GothamBlack
+    equipBtn.TextSize = 10
+    equipBtn.Parent = card
+    Instance.new("UICorner", equipBtn).CornerRadius = UDim.new(0, 7)
+    AttachButtonBounce(equipBtn)
+
+    TitleCardsUI[tObj.Id] = { Stroke = stroke, Btn = equipBtn, Obj = tObj }
+
+    equipBtn.MouseButton1Click:Connect(function()
+        if not VerifyRuntimeIntegrity() then return end
+        if tObj.Check(DataStore) then
+            State.EquippedTitle = tObj.Id
+            SaveData()
+            BroadcastMyStats()
+            BannerLbl.Text = string.format("🏅 Equipped Title: %s (%s)", tObj.Name, tObj.BuffText)
+            BannerLbl.TextColor3 = C_GOLD
+        end
+    end)
+end
+
+--// MULTIPLAYER SCRIPT USER LEADERBOARD TAB
+local BoardHeader = Instance.new("Frame")
+BoardHeader.Size = UDim2.new(1, 0, 0, 34)
+BoardHeader.BackgroundColor3 = C_SURFACE
+BoardHeader.Parent = BoardPage
+Instance.new("UICorner", BoardHeader).CornerRadius = UDim.new(0, 8)
+local BHStroke = Instance.new("UIStroke", BoardHeader)
+BHStroke.Color = C_GREEN
+
+local BoardHeaderLbl = Instance.new("TextLabel")
+BoardHeaderLbl.Size = UDim2.new(1, -16, 1, 0)
+BoardHeaderLbl.Position = UDim2.new(0, 8, 0, 0)
+BoardHeaderLbl.BackgroundTransparency = 1
+BoardHeaderLbl.Text = "🏆 LIVE SCRIPT USERS IN SERVER"
+BoardHeaderLbl.TextColor3 = C_GREEN
+BoardHeaderLbl.Font = Enum.Font.GothamBold
+BoardHeaderLbl.TextSize = 10
+BoardHeaderLbl.TextXAlignment = Enum.TextXAlignment.Left
+BoardHeaderLbl.Parent = BoardHeader
+
+local BoardListContainer = Instance.new("Frame")
+BoardListContainer.Size = UDim2.new(1, 0, 1, -40)
+BoardListContainer.Position = UDim2.new(0, 0, 0, 40)
+BoardListContainer.BackgroundTransparency = 1
+BoardListContainer.Parent = BoardPage
+
+local function RebuildLeaderboardUI()
+    for _, c in ipairs(BoardListContainer:GetChildren()) do c:Destroy() end
+    local users = ScanConnectedScriptUsers()
+    BoardHeaderLbl.Text = string.format("🏆 LIVE SCRIPT USERS (%d Connected)", #users)
+    BoardPage.CanvasSize = UDim2.new(0, 0, 0, 50 + (#users * 54))
+
+    for rank, entry in ipairs(users) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 48)
+        row.Position = UDim2.new(0, 0, 0, (rank - 1) * 54)
+        row.BackgroundColor3 = C_SURFACE
+        row.Parent = BoardListContainer
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+        local rStroke = Instance.new("UIStroke", row)
+        rStroke.Color = (entry.id == LocalPlayer.UserId) and C_GOLD or C_BORDER
+
+        local modeBadge = (tonumber(entry.h) == 1) and "🔥 HARD" or "🟢 NORM"
+        local vipTag = (tonumber(entry.v) == 1) and "[👑 VIP] " or ""
+        local topLbl = Instance.new("TextLabel")
+        topLbl.Size = UDim2.new(1, -16, 0.48, 0)
+        topLbl.Position = UDim2.new(0, 8, 0, 2)
+        topLbl.BackgroundTransparency = 1
+        topLbl.Text = string.format("#%d %s%s • %s • %s", rank, vipTag, tostring(entry.d), tostring(entry.t or "🌱 Novice"), modeBadge)
+        topLbl.TextColor3 = (tonumber(entry.v) == 1) and C_GOLD or Color3.fromRGB(245, 245, 250)
+        topLbl.Font = Enum.Font.GothamBold
+        topLbl.TextSize = 10
+        topLbl.TextXAlignment = Enum.TextXAlignment.Left
+        topLbl.Parent = row
+
+        local botLbl = Instance.new("TextLabel")
+        botLbl.Size = UDim2.new(1, -16, 0.46, 0)
+        botLbl.Position = UDim2.new(0, 8, 0.48, 0)
+        botLbl.BackgroundTransparency = 1
+        botLbl.Text = string.format(
+            "💰 $%s  |  🔄 Reb: %d  |  👑 Pres: %d",
+            FormatNum(tonumber(entry.c) or 0),
+            math.floor(tonumber(entry.r) or 0),
+            math.floor(tonumber(entry.p) or 0)
+        )
+        botLbl.TextColor3 = C_DIAMOND
+        botLbl.Font = Enum.Font.GothamSemibold
+        botLbl.TextSize = 10
+        botLbl.TextXAlignment = Enum.TextXAlignment.Left
+        botLbl.Parent = row
+    end
+end
+
+--// UI Refresh Function
+local function UpdateUI()
+    CheckTimersReset()
+    local maxAllowed = GetMaxBetCost()
+    local effBet, isScaled = GetEffectiveBet()
+    local outOfFunds = State.HardMode and (State.Cash < MIN_BID and State.BailoutsLeft <= 0)
+    local gReq = GetGoldenReq()
+    local dReq = GetDiamondReq()
+
+    local nextIsDiamond = ((State.DiamondCounter + 1) >= dReq)
+    local nextIsGolden = ((State.GoldenCounter + 1) >= gReq)
+    local activeTitle = GetActiveTitleObj()
+    local netLuckPct = GetNetLuckPercent(effBet, 1)
+    local spinDur = GetSpinDuration()
+    local feverGoal = DataStore.Passes.turbo_fever and 15 or 25
+    local feverMaxDuration = DataStore.Passes.turbo_fever and 8 or 5
+
+    if State.HardMode then
+        ModeBtn.Text = "🔥 HARD (2x)"
+        ModeBtn.BackgroundColor3 = C_RED
+    else
+        ModeBtn.Text = "🟢 NORMAL"
+        ModeBtn.BackgroundColor3 = C_GREEN
+    end
+
+    GemsHeaderLbl.Text = string.format("💠 %s Gems", FormatNum(DataStore.Gems))
+    CashLbl.Text = "💰 $" .. FormatNum(State.Cash)
+    MultLbl.Text = string.format("⚡ %sx%s", FormatNum(GetTotalMultiplier(effBet)), State.FeverSpinsLeft > 0 and " 🔥FEVER" or "")
+    SubDashLbl.Text = string.format(
+        "🔄 Reb: %d | 👑 Pres: %d | 🔮 %s PT | %s",
+        State.Rebirths, State.Prestiges, FormatNum(State.PrestigeTokens), activeTitle.Name
+    )
+
+    PityStatusLbl.Text = State.FeverSpinsLeft > 0
+        and string.format("✨ Gold: %d/%d  |  💎 Dia: %d/%d  |  🔥 FEVER ACTIVE (%d left!)", State.GoldenCounter, gReq, State.DiamondCounter, dReq, State.FeverSpinsLeft)
+        or string.format("✨ Gold: %d/%d  |  💎 Dia: %d/%d  |  🔥 Fever: %d/%d", State.GoldenCounter, gReq, State.DiamondCounter, dReq, State.FeverCharge, feverGoal)
+
+    local feverRatio = State.FeverSpinsLeft > 0 and (State.FeverSpinsLeft / feverMaxDuration) or (State.FeverCharge / feverGoal)
+    TweenService:Create(
+        FeverBarFill,
+        TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { Size = UDim2.new(math.clamp(feverRatio, 0, 1), 0, 1, 0) }
+    ):Play()
+    FeverBarFill.BackgroundColor3 = State.FeverSpinsLeft > 0 and C_GOLD or C_ORANGE
+
+    local winRate = State.SessionSpins > 0 and ((State.SessionWins / State.SessionSpins) * 100) or 0
+    TelemetryLbl.Text = string.format(
+        "📊 TELEMETRY  •  🍀 Net Luck: %+.1f%%  •  ⏱️ Speed: %.2fs\n🏆 Best Win: $%s  •  🎰 Total Spins: %s  •  🎯 Session Win%%: %.1f%%",
+        netLuckPct, spinDur, FormatNum(State.BiggestWin), FormatNum(State.TotalSpins), winRate
+    )
+
+    BidRangeLbl.Text = State.HardMode
+        and string.format("💵 PAID BID\n$10-$%s", FormatNum(maxAllowed))
+        or string.format("⚡ POWER\n$10-$%s", FormatNum(maxAllowed))
+
+    if not BidInputBox:IsFocused() then
+        if State.AutoMaxBid then
+            BidInputBox.PlaceholderText = "Auto: $" .. FormatNum(maxAllowed)
+            BidInputBox.Text = ""
+        else
+            local clampedManual = math.clamp(State.ManualBid or MIN_BID, MIN_BID, maxAllowed)
+            BidInputBox.PlaceholderText = "$" .. FormatNum(clampedManual)
+            BidInputBox.Text = tostring(clampedManual)
+        end
+    end
+
+    AutoBidBtn.BackgroundColor3 = State.AutoMaxBid and C_BLUE or C_CARD
+    MinBidBtn.BackgroundColor3 = (not State.AutoMaxBid and State.ManualBid == MIN_BID) and C_BLUE or C_CARD
+
+    if State.Spinning then
+        SpinBtn.Text = "🎰 SPINNING..."
+        SpinBtn.BackgroundColor3 = C_CARD
+    elseif outOfFunds then
+        SpinBtn.Text = string.format("💀 OUT OF FUNDS (0/%d)", GetMaxBailouts())
+        SpinBtn.BackgroundColor3 = C_RED
+    elseif State.HardMode and State.Cash < MIN_BID and State.BailoutsLeft > 0 then
+        SpinBtn.Text = string.format("🆘 BAILOUT +$100 (%d/%d)", State.BailoutsLeft, GetMaxBailouts())
+        SpinBtn.BackgroundColor3 = C_BLUE
+    elseif not State.HardMode then
+        if nextIsDiamond then
+            SpinBtn.Text = "💎 FREE DIAMOND SPIN"
+            SpinBtn.BackgroundColor3 = Color3.fromRGB(25, 155, 195)
+        elseif nextIsGolden then
+            SpinBtn.Text = "✨ FREE GOLDEN SPIN"
+            SpinBtn.BackgroundColor3 = Color3.fromRGB(195, 140, 20)
+        else
+            SpinBtn.Text = "🎲 FREE SPIN (Pwr $" .. FormatNum(effBet) .. ")"
+            SpinBtn.BackgroundColor3 = C_GREEN
+        end
+    else
+        if nextIsDiamond then
+            SpinBtn.Text = "💎 DIA SPIN (-$" .. FormatNum(effBet) .. ")"
+            SpinBtn.BackgroundColor3 = Color3.fromRGB(25, 155, 195)
+        elseif nextIsGolden then
+            SpinBtn.Text = "✨ GOLD SPIN (-$" .. FormatNum(effBet) .. ")"
+            SpinBtn.BackgroundColor3 = Color3.fromRGB(195, 140, 20)
+        else
+            SpinBtn.Text = isScaled
+                and ("🔥 ALL-IN (-$" .. FormatNum(effBet) .. ")")
+                or ("🔥 SPIN (-$" .. FormatNum(effBet) .. ")")
+            SpinBtn.BackgroundColor3 = Color3.fromRGB(205, 65, 55)
+        end
+    end
+
+    local betCost = GetBetUpgradeCost()
+    local hrBonusPct = math.floor((State.BetLevel - 1) * (State.HardMode and 10 or 7))
+    BetTitle.Text = string.format("⬆️ Max Bet (Lv.%d | +%d%%)", State.BetLevel, hrBonusPct)
+    BetSub.Text = string.format("Cost: $%s • Cap: $%s", FormatNum(betCost), FormatNum(maxAllowed))
+    BetMaxBtn.BackgroundColor3 = State.Cash >= betCost and C_BLUE or C_CARD
+
+    local slotCost = GetSlotUpgradeCost()
+    SlotTitle.Text = string.format("🎰 Reels (%d/10)", State.SlotCount)
+    SlotSub.Text = State.SlotCount >= 10 and "MAX 10 REELS UNLOCKED" or ("+1 Reel: $" .. FormatNum(slotCost))
+
+    local luckCost = GetLuckUpgradeCost()
+    LuckTitle.Text = string.format("🍀 Luck (Lv.%d)", State.LuckLevel)
+    LuckSub.Text = "Cost: $" .. FormatNum(luckCost) .. " (∞)"
+    LuckMaxBtn.BackgroundColor3 = State.Cash >= luckCost and C_PURPLE or C_CARD
+
+    local speedCost = GetSpeedUpgradeCost()
+    SpeedTitle.Text = string.format("⚡ Speed (Lv.%d/%d)", State.SpeedLevel, MAX_SPEED_LEVEL)
+    SpeedSub.Text = State.SpeedLevel >= MAX_SPEED_LEVEL
+        and "MAX SPEED CAPPED (0.42s)"
+        or ("Cost: $" .. FormatNum(speedCost))
+    SpeedMaxBtn.BackgroundColor3 = (State.SpeedLevel < MAX_SPEED_LEVEL and State.Cash >= speedCost)
+        and Color3.fromRGB(35, 165, 185) or C_CARD
+
+    local gCost = GetGoldenUpgradeCost()
+    GoldPityTitle.Text = string.format("✨ Gold Roll (%d/5)", State.GoldenPityLevel)
+    GoldPitySub.Text = State.GoldenPityLevel >= 5
+        and "MAXED: Every 5 Spins"
+        or string.format("Every %d • $%s", gReq, FormatNum(gCost))
+
+    local dCost = GetDiamondUpgradeCost()
+    DiaPityTitle.Text = string.format("💎 Dia Roll (%d/45)", State.DiamondPityLevel)
+    DiaPitySub.Text = State.DiamondPityLevel >= 45
+        and "MAXED: Every 55 Spins"
+        or string.format("Every %d • $%s", dReq, FormatNum(dCost))
+
+    local rebCost = GetRebirthCost()
+    RebTitle.Text = string.format("🔄 REBIRTH (%d)", State.Rebirths)
+    RebSub.Text = string.format("Req: $%s (+%.2fx)", FormatNum(rebCost), State.HardMode and 1.15 or 0.75)
+
+    local presReq = GetPrestigeReqRebirths()
+    local ptGain = GetPrestigeTokenGain()
+    PresTitle.Text = string.format("👑 PRESTIGE (%d)", State.Prestiges)
+    PresSub.Text = string.format("Req: %d Reb (+%s PT)", presReq, FormatNum(ptGain))
+
+    -- Refresh Branching Tech Tree UI
+    for _, node in ipairs(TechTreeNodes) do
+        local ui = TechUI[node.Key]
+        local lvl = State.Tech[node.Key]
+        local cost = GetTechCost(node)
+        local unlocked = IsTechNodeUnlocked(node)
+
+        if unlocked then
+            ui.Title.Text = string.format("%s [Lv.%d]", node.Title, lvl)
+            ui.Sub.Text = string.format("Cost: %s PT • %s", FormatNum(cost), node.Desc)
+            ui.Stroke.Color = State.PrestigeTokens >= cost and node.Color or C_BORDER
+            ui.Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            ui.Title.Text = "🔒 " .. node.Title
+            ui.Sub.Text = "Unlock parent node to access this branch"
+            ui.Stroke.Color = C_BORDER
+            ui.Title.TextColor3 = Color3.fromRGB(130, 135, 150)
+        end
+    end
+
+    -- Refresh Daily Login + Daily & Weekly Quests UI
+    local claimableCount = 0
+    local today = GetCurrentDayKey()
+    local canClaimLogin = (DataStore.Login.LastClaimDay ~= today)
+    local nextStreak = (DataStore.Login.LastClaimDay == today - 1) and ((DataStore.Login.Streak % 7) + 1) or 1
+    if not canClaimLogin then nextStreak = DataStore.Login.Streak end
+    local loginBase = DailyLoginRewards[nextStreak] or 15
+    local loginFinal = DataStore.Passes.vip and math.ceil(loginBase * 1.25) or loginBase
+
+    LoginTitleLbl.Text = string.format("📅 DAILY LOGIN REWARD (Day %d / 7 Streak)", nextStreak)
+    if canClaimLogin then
+        claimableCount += 1
+        LoginClaimBtn.Text = string.format("CLAIM +%d 💠", loginFinal)
+        LoginClaimBtn.BackgroundColor3 = C_GREEN
+    else
+        LoginClaimBtn.Text = "CLAIMED ✓"
+        LoginClaimBtn.BackgroundColor3 = C_CARD
+    end
+
+    for _, item in pairs(QuestUI) do
+        local q = item.Template
+        local storeBucket = (item.Bucket == "Daily") and DataStore.Daily or DataStore.Weekly
+        local currentVal = math.min(q.Goal, math.floor(storeBucket[q.StatKey] or 0))
+        local claimed = storeBucket.Claimed[q.Id] == true
+        local rewardAmt = DataStore.Passes.vip and math.ceil(q.Reward * 1.25) or q.Reward
+
+        item.Sub.Text = string.format("%s (%s/%s)", q.Desc, FormatNum(currentVal), FormatNum(q.Goal))
+        if claimed then
+            item.Btn.Text = "CLAIMED"
+            item.Btn.BackgroundColor3 = C_CARD
+            item.Stroke.Color = C_BORDER
+        elseif currentVal >= q.Goal then
+            claimableCount += 1
+            item.Btn.Text = string.format("CLAIM +%d 💠", rewardAmt)
+            item.Btn.BackgroundColor3 = C_GREEN
+            item.Stroke.Color = C_GREEN
+        else
+            item.Btn.Text = string.format("+%d 💠", rewardAmt)
+            item.Btn.BackgroundColor3 = C_CARD
+            item.Stroke.Color = (item.Bucket == "Weekly") and C_PURPLE or C_BORDER
+        end
+    end
+
+    if DataStore.Passes.auto_claim and claimableCount > 0 then
+        if canClaimLogin then ClaimDailyLogin() end
+        for _, item in pairs(QuestUI) do
+            local q = item.Template
+            local storeBucket = (item.Bucket == "Daily") and DataStore.Daily or DataStore.Weekly
+            if (storeBucket[q.StatKey] or 0) >= q.Goal and not storeBucket.Claimed[q.Id] then
+                storeBucket.Claimed[q.Id] = true
+                local rewardAmt = DataStore.Passes.vip and math.ceil(q.Reward * 1.25) or q.Reward
+                DataStore.Gems += rewardAmt
+            end
+        end
+        RefreshSeal()
+        SaveData()
+        claimableCount = 0
+    end
+
+    TabButtons["QUESTS"].Btn.Text = claimableCount > 0
+        and string.format("📋 QUEST (%d)", claimableCount)
+        or "📋 QUEST"
+
+    for _, p in ipairs(PassCatalog) do
+        local ui = PassUI[p.Id]
+        local owned = DataStore.Passes[p.Id] == true
+        if owned then
+            ui.Btn.Text = "OWNED ✓"
+            ui.Btn.BackgroundColor3 = C_GREEN
+            ui.Stroke.Color = C_GREEN
+        else
+            ui.Btn.Text = string.format("💠 %d", p.Cost)
+            ui.Btn.BackgroundColor3 = DataStore.Gems >= p.Cost and C_BLUE or C_CARD
+            ui.Stroke.Color = C_GOLD
+        end
+    end
+
+    for id, ui in pairs(TitleCardsUI) do
+        local unlocked = ui.Obj.Check(DataStore)
+        local equipped = (State.EquippedTitle == id) and unlocked
+        if equipped then
+            ui.Btn.Text = "EQUIPPED"
+            ui.Btn.BackgroundColor3 = C_GREEN
+            ui.Stroke.Color = C_GOLD
+        elseif unlocked then
+            ui.Btn.Text = "EQUIP"
+            ui.Btn.BackgroundColor3 = C_BLUE
+            ui.Stroke.Color = C_BORDER
+        else
+            ui.Btn.Text = "LOCKED"
+            ui.Btn.BackgroundColor3 = C_CARD
+            ui.Stroke.Color = C_BORDER
+        end
+    end
+
+    BroadcastMyStats()
+    if BoardPage.Visible then
+        RebuildLeaderboardUI()
+    end
+end
+
+--// QOL Smart Buy-All Affordable Upgrades
+BuyAllQOLBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local purchased = 0
+    local keepBuying = true
+    while keepBuying do
+        keepBuying = false
+        if State.Cash >= GetBetUpgradeCost() then
+            State.Cash -= GetBetUpgradeCost()
+            State.BetLevel += 1
+            purchased += 1
+            keepBuying = true
+        end
+        if State.Cash >= GetLuckUpgradeCost() then
+            State.Cash -= GetLuckUpgradeCost()
+            State.LuckLevel += 1
+            purchased += 1
+            keepBuying = true
+        end
+        if State.SpeedLevel < MAX_SPEED_LEVEL and State.Cash >= GetSpeedUpgradeCost() then
+            State.Cash -= GetSpeedUpgradeCost()
+            State.SpeedLevel += 1
+            purchased += 1
+            keepBuying = true
+        end
+        if State.GoldenPityLevel < 5 and State.Cash >= GetGoldenUpgradeCost() then
+            State.Cash -= GetGoldenUpgradeCost()
+            State.GoldenPityLevel += 1
+            purchased += 1
+            keepBuying = true
+        end
+        if State.DiamondPityLevel < 45 and State.Cash >= GetDiamondUpgradeCost() then
+            State.Cash -= GetDiamondUpgradeCost()
+            State.DiamondPityLevel += 1
+            purchased += 1
+            keepBuying = true
+        end
+    end
+    if purchased > 0 then
+        BannerLbl.Text = string.format("⚡ QOL Smart-Bought %d upgrades!", purchased)
+        BannerLbl.TextColor3 = C_GREEN
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+--// Mode Switch Handler
+ModeBtn.MouseButton1Click:Connect(function()
+    if State.Spinning then return end
+    if not VerifyRuntimeIntegrity() then return end
+
+    State.HardMode = not State.HardMode
+    if not State.AutoMaxBid and State.ManualBid then
+        State.ManualBid = math.clamp(State.ManualBid, MIN_BID, GetMaxBetCost())
+    end
+
+    BannerLbl.Text = State.HardMode
+        and "🔥 HARDMODE: 2x Upgrade Cost • Paid Bids • +65% Payout!"
+        or "🟢 NORMAL MODE: Free Spins • Standard Costs!"
+    BannerLbl.TextColor3 = State.HardMode and C_RED or C_GREEN
+
+    SaveData()
+    UpdateUI()
+end)
+
+TabButtons["BOARD"].Btn.MouseButton1Click:Connect(function()
+    SwitchTab("BOARD")
+    RebuildLeaderboardUI()
+end)
+
+--// Manual Bid Input & Preset Connections
+BidInputBox.FocusLost:Connect(function()
+    local raw = string.gsub(BidInputBox.Text, "[^0-9%.eE%+%-]", "")
+    local parsed = tonumber(raw)
+    local maxAllowed = GetMaxBetCost()
+
+    if parsed and parsed == parsed and parsed ~= math.huge and parsed ~= -math.huge then
+        local clamped = math.clamp(math.floor(parsed), MIN_BID, maxAllowed)
+        State.ManualBid = clamped
+        State.AutoMaxBid = false
+        BannerLbl.Text = string.format("💵 Bid set to $%s (Min $10 / Max $%s)", FormatNum(clamped), FormatNum(maxAllowed))
+        BannerLbl.TextColor3 = C_GOLD
+    else
+        State.ManualBid = nil
+        State.AutoMaxBid = true
+        BannerLbl.Text = string.format("💵 Bid set to Auto-Max ($%s)", FormatNum(maxAllowed))
+        BannerLbl.TextColor3 = C_BLUE
+    end
+    UpdateUI()
+end)
+
+MinBidBtn.MouseButton1Click:Connect(function()
+    State.ManualBid = MIN_BID
+    State.AutoMaxBid = false
+    UpdateUI()
+end)
+
+HalfBidBtn.MouseButton1Click:Connect(function()
+    local maxAllowed = GetMaxBetCost()
+    local cap = State.HardMode and math.min(maxAllowed, math.max(MIN_BID, math.floor(State.Cash))) or maxAllowed
+    State.ManualBid = math.clamp(math.floor(cap * 0.5), MIN_BID, maxAllowed)
+    State.AutoMaxBid = false
+    UpdateUI()
+end)
+
+AutoBidBtn.MouseButton1Click:Connect(function()
+    State.ManualBid = nil
+    State.AutoMaxBid = true
+    UpdateUI()
+end)
+
+--// ECONOMY-SCALED ADMIN SAVE EDITOR
+if isAdmin and AdminPage then
+    local function AdminApplySaveChange(mutatorFn, statusMsg)
+        if not IsAuthorizedAdmin() then return end
+        if not VerifyRuntimeIntegrity() then
+            DataStore = CreateDefaultData()
+            RefreshSeal()
+        end
+        mutatorFn(DataStore)
+        RefreshSeal()
+        SaveData()
+        RebuildReels()
+        UpdateUI()
+        BannerLbl.Text = "🛠️ [ADMIN] " .. statusMsg
+        BannerLbl.TextColor3 = C_DIAMOND
+    end
+
+    local PresetsRow = Instance.new("Frame")
+    PresetsRow.Size = UDim2.new(1, 0, 0, 34)
+    PresetsRow.BackgroundTransparency = 1
+    PresetsRow.Parent = AdminPage
+
+    local function MakeQuickAdminBtn(xScale, wScale, bgColor, text, callback)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(wScale, 0, 1, 0)
+        b.Position = UDim2.new(xScale, 0, 0, 0)
+        b.BackgroundColor3 = bgColor
+        b.Text = text
+        b.TextColor3 = Color3.fromRGB(255, 255, 255)
+        b.Font = Enum.Font.GothamBold
+        b.TextSize = 10
+        b.Parent = PresetsRow
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+        AttachButtonBounce(b)
+        b.MouseButton1Click:Connect(callback)
+    end
+
+    MakeQuickAdminBtn(0.00, 0.24, C_GREEN, "+Scaled 10M", function()
+        local mult = GetUpgradeCashMultiplier(GetMaxBetCost())
+        local scaledGrant = math.floor(10000000 * mult)
+        AdminApplySaveChange(function(d)
+            d.Cash += scaledGrant
+        end, string.format("Added +$%s (10M × %.2fx mult)!", FormatNum(scaledGrant), mult))
+    end)
+
+    MakeQuickAdminBtn(0.253, 0.24, C_DIAMOND, "+250 Gems", function()
+        AdminApplySaveChange(function(d) d.Gems += 250 end, "Added +250 Gems!")
+    end)
+
+    MakeQuickAdminBtn(0.506, 0.24, C_PURPLE, "+50 PT", function()
+        AdminApplySaveChange(function(d) d.PrestigeTokens += 50 end, "Added +50 PT!")
+    end)
+
+    MakeQuickAdminBtn(0.76, 0.24, C_RED, "Reset Save", function()
+        AdminApplySaveChange(function(_)
+            DataStore = CreateDefaultData()
+        end, "Save reset to clean default!")
+    end)
+
+    local AdminFields = {
+        { Label = "💰 Cash ($)",              Get = function() return DataStore.Cash end,             Set = function(d, v) d.Cash = math.max(0, v) end },
+        { Label = "💠 Gems",                  Get = function() return DataStore.Gems end,             Set = function(d, v) d.Gems = math.max(0, math.floor(v)) end },
+        { Label = "🔮 Prestige Tokens (PT)",  Get = function() return DataStore.PrestigeTokens end,   Set = function(d, v) d.PrestigeTokens = math.max(0, math.floor(v)) end },
+        { Label = "🔄 Rebirths",              Get = function() return DataStore.Rebirths end,         Set = function(d, v) d.Rebirths = math.max(0, math.floor(v)) end },
+        { Label = "👑 Prestiges",             Get = function() return DataStore.Prestiges end,        Set = function(d, v) d.Prestiges = math.max(0, math.floor(v)) end },
+        { Label = "⬆️ Bet Level",             Get = function() return DataStore.BetLevel end,         Set = function(d, v) d.BetLevel = math.max(1, math.floor(v)) end },
+        { Label = "🍀 Luck Level",            Get = function() return DataStore.LuckLevel end,        Set = function(d, v) d.LuckLevel = math.max(1, math.floor(v)) end },
+        { Label = "⚡ Speed Level (1-25)",    Get = function() return DataStore.SpeedLevel end,       Set = function(d, v) d.SpeedLevel = math.clamp(math.floor(v), 1, MAX_SPEED_LEVEL) end },
+        { Label = "🎰 Slot Reels (3-10)",     Get = function() return DataStore.SlotCount end,        Set = function(d, v) d.SlotCount = math.clamp(math.floor(v), 3, 10) end }
+    }
+
+    AdminPage.CanvasSize = UDim2.new(0, 0, 0, 50 + (#AdminFields * 40))
+
+    for i, field in ipairs(AdminFields) do
+        local rowY = 42 + ((i - 1) * 40)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 34)
+        row.Position = UDim2.new(0, 0, 0, rowY)
+        row.BackgroundColor3 = C_SURFACE
+        row.Parent = AdminPage
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 7)
+        local rStroke = Instance.new("UIStroke", row)
+        rStroke.Color = C_BORDER
+
+        local nameLbl = Instance.new("TextLabel")
+        nameLbl.Size = UDim2.new(0.46, 0, 1, 0)
+        nameLbl.Position = UDim2.new(0, 8, 0, 0)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.Text = field.Label
+        nameLbl.TextColor3 = Color3.fromRGB(230, 235, 245)
+        nameLbl.Font = Enum.Font.GothamSemibold
+        nameLbl.TextSize = 10
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.Parent = row
+
+        local box = Instance.new("TextBox")
+        box.Size = UDim2.new(0.32, 0, 0, 24)
+        box.Position = UDim2.new(0.47, 0, 0.5, -12)
+        box.BackgroundColor3 = C_BLACK
+        box.PlaceholderText = tostring(field.Get())
+        box.Text = ""
+        box.TextColor3 = C_GOLD
+        box.PlaceholderColor3 = Color3.fromRGB(120, 125, 140)
+        box.Font = Enum.Font.GothamBold
+        box.TextSize = 10
+        box.ClearTextOnFocus = false
+        box.Parent = row
+        Instance.new("UICorner", box).CornerRadius = UDim.new(0, 5)
+
+        local setBtn = Instance.new("TextButton")
+        setBtn.Size = UDim2.new(0.17, 0, 0, 24)
+        setBtn.Position = UDim2.new(0.81, 0, 0.5, -12)
+        setBtn.BackgroundColor3 = C_BLUE
+        setBtn.Text = "SET"
+        setBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        setBtn.Font = Enum.Font.GothamBlack
+        setBtn.TextSize = 10
+        setBtn.Parent = row
+        Instance.new("UICorner", setBtn).CornerRadius = UDim.new(0, 5)
+        AttachButtonBounce(setBtn)
+
+        setBtn.MouseButton1Click:Connect(function()
+            local num = tonumber(box.Text)
+            if num and num == num and num ~= math.huge and num ~= -math.huge then
+                AdminApplySaveChange(function(d)
+                    field.Set(d, num)
+                end, string.format("Set %s -> %s", field.Label, FormatNum(num)))
+                box.PlaceholderText = tostring(field.Get())
+                box.Text = ""
+            end
+        end)
+    end
+end
+
+--// Rebirth Helper
+local function TriggerRebirth()
+    if not VerifyRuntimeIntegrity() then UpdateUI(); return false end
+    local cost = GetRebirthCost()
+    if State.Cash >= cost then
+        CheckTimersReset()
+        local keepRatio = GetMasteryKeepRate()
+        State.Rebirths += 1
+        DataStore.Weekly.Rebirths += 1
+        if State.HardMode then
+            State.HardRebirths += 1
+        end
+        State.Cash = 100
+        State.BetLevel = math.max(1, math.floor(State.BetLevel * keepRatio))
+        State.LuckLevel = math.max(1, math.floor(State.LuckLevel * keepRatio))
+        State.SpeedLevel = math.max(1, math.floor(State.SpeedLevel * keepRatio))
+        State.BailoutsLeft = math.min(GetMaxBailouts(), State.BailoutsLeft + 1)
+        if not State.AutoMaxBid and State.ManualBid then
+            State.ManualBid = math.clamp(State.ManualBid, MIN_BID, GetMaxBetCost())
+        end
+        BannerLbl.Text = "🔄 REBIRTHED! Multiplier Up (+1 Bailout Restored)!"
+        BannerLbl.TextColor3 = C_ORANGE
+        SaveData()
+        UpdateUI()
+        return true
+    end
+    return false
+end
+
+--// Enhanced Reel Animation
+local function DoSpin()
+    if State.Spinning then return end
+
+    if not VerifyRuntimeIntegrity() then
+        BannerLbl.Text = "🚨 MEMORY TAMPER DETECTED! Reset to $100!"
+        BannerLbl.TextColor3 = C_RED
+        SaveData()
+        UpdateUI()
+        return
+    end
+
+    if State.HardMode and State.Cash < MIN_BID then
+        if State.BailoutsLeft > 0 then
+            State.BailoutsLeft -= 1
+            State.Cash = 100
+            BannerLbl.Text = string.format("🆘 Hardmode Stimulus! +$100 (%d/%d Left)", State.BailoutsLeft, GetMaxBailouts())
+            BannerLbl.TextColor3 = Color3.fromRGB(110, 215, 255)
+            SaveData()
+            UpdateUI()
+        else
+            BannerLbl.Text = "💀 BANKRUPT IN HARDMODE! Switch to Normal Mode!"
+            BannerLbl.TextColor3 = C_RED
+            State.AutoSpin = false
+            AutoBtn.Text = "🔁 AUTO\nOFF"
+            AutoBtn.BackgroundColor3 = C_CARD
+            UpdateUI()
+            return
+        end
+    end
+
+    CheckTimersReset()
+    local bet, isScaled = GetEffectiveBet()
+    State.Spinning = true
+    State.SessionSpins += 1
+
+    if State.HardMode then
+        State.Cash -= bet
+        DataStore.Daily.HardSpins += 1
+    end
+
+    State.TotalSpins += 1
+    DataStore.Daily.Spins += 1
+    DataStore.Weekly.Spins += 1
+
+    local pityStep = DataStore.Passes.pity_boost and 2 or 1
+    State.GoldenCounter += pityStep
+    State.DiamondCounter += pityStep
+
+    local feverGoal = DataStore.Passes.turbo_fever and 15 or 25
+    local feverMaxDuration = DataStore.Passes.turbo_fever and 8 or 5
+
+    if State.FeverSpinsLeft > 0 then
+        State.FeverSpinsLeft -= 1
+    else
+        State.FeverCharge += 1
+        if State.FeverCharge >= feverGoal then
+            State.FeverCharge = 0
+            State.FeverSpinsLeft = feverMaxDuration
+        end
+    end
+
+    local gReq = GetGoldenReq()
+    local dReq = GetDiamondReq()
+    local specialLuckMult = 1
+    local rollType = "NORMAL"
+
+    if State.DiamondCounter >= dReq then
+        State.DiamondCounter = 0
+        if State.GoldenCounter >= gReq then State.GoldenCounter = 0 end
+        specialLuckMult = 8
+        rollType = "DIAMOND"
+    elseif State.GoldenCounter >= gReq then
+        State.GoldenCounter = 0
+        specialLuckMult = 2
+        rollType = "GOLDEN"
+    end
+
+    if rollType == "DIAMOND" then
+        MachineStroke.Color = C_DIAMOND
+        MachineStroke.Thickness = 2.5
+        BannerLbl.Text = "💎 DIAMOND ROLL! (8x LUCK ACTIVE)"
+        BannerLbl.TextColor3 = C_DIAMOND
+    elseif rollType == "GOLDEN" then
+        MachineStroke.Color = C_GOLD
+        MachineStroke.Thickness = 2.2
+        BannerLbl.Text = "✨ GOLDEN ROLL! (2x LUCK ACTIVE)"
+        BannerLbl.TextColor3 = C_GOLD
+    else
+        MachineStroke.Color = State.FeverSpinsLeft > 0 and C_ORANGE or (State.HardMode and C_RED or C_BORDER)
+        MachineStroke.Thickness = 1.5
+        BannerLbl.Text = isScaled
+            and string.format("🔥 All-In Rolling ($%s)...", FormatNum(bet))
+            or string.format("🎲 Rolling %d reels...", State.SlotCount)
+        BannerLbl.TextColor3 = Color3.fromRGB(205, 210, 225)
+    end
+
+    for _, r in ipairs(Reels) do
+        r.Stroke.Color = rollType == "DIAMOND" and C_DIAMOND or (rollType == "GOLDEN" and C_GOLD or C_BORDER)
+        r.Stroke.Thickness = 1
+    end
+
+    UpdateUI()
+
+    local count = State.SlotCount
+    local finalResults = {}
+    for i = 1, count do
+        finalResults[i] = RollIcon(bet, specialLuckMult)
+    end
+
+    local totalDuration = GetSpinDuration()
+    local completedReels = 0
+
+    for i = 1, count do
+        task.spawn(function()
+            local reel = Reels[i]
+            if not reel then
+                completedReels += 1
+                return
+            end
+
+            task.wait((i - 1) * 0.035)
+            local windUp = TweenService:Create(
+                reel.Strip,
+                TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                { Position = UDim2.new(0, 0, -1.16, 0) }
+            )
+            windUp:Play()
+            windUp.Completed:Wait()
+
+            local reelRollTime = totalDuration * (0.52 + (0.48 * (i / count)))
+            local steps = 6
+            local baseStep = math.max(0.045, reelRollTime / steps)
+
+            for s = 1, steps do
+                local nextSym = (s == steps) and finalResults[i].Symbol or Icons[math.random(1, #Icons)].Symbol
+                reel.TopCell.Text = nextSym
+                reel.Strip.Position = UDim2.new(0, 0, -1, 0)
+
+                local stepDur = (s >= steps - 1) and (baseStep * 1.35) or (baseStep * 0.85)
+                local tween = TweenService:Create(
+                    reel.Strip,
+                    TweenInfo.new(stepDur, Enum.EasingStyle.Linear),
+                    { Position = UDim2.new(0, 0, 0, 0) }
+                )
+                tween:Play()
+                tween.Completed:Wait()
+
+                reel.BotCell.Text = reel.MidCell.Text
+                reel.MidCell.Text = nextSym
+                reel.Strip.Position = UDim2.new(0, 0, -1, 0)
+            end
+
+            reel.Strip.Position = UDim2.new(0, 0, -0.84, 0)
+            reel.Stroke.Color = C_GOLD
+            TweenService:Create(
+                reel.Strip,
+                TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+                { Position = UDim2.new(0, 0, -1, 0) }
+            ):Play()
+            task.wait(0.08)
+            reel.Stroke.Color = C_BORDER
+
+            completedReels += 1
+        end)
+    end
+
+    while completedReels < count do
+        task.wait(0.015)
+    end
+
+    local counts = {}
+    local bestIcon = nil
+    local bestCount = 0
+
+    for _, iconObj in ipairs(finalResults) do
+        counts[iconObj.Symbol] = (counts[iconObj.Symbol] or 0) + 1
+        if counts[iconObj.Symbol] > bestCount or (counts[iconObj.Symbol] == bestCount and bestIcon and iconObj.Mult > bestIcon.Mult) then
+            bestCount = counts[iconObj.Symbol]
+            bestIcon = iconObj
+        end
+    end
+
+    if bestCount >= 2 and bestIcon then
+        for i, iconObj in ipairs(finalResults) do
+            if iconObj.Symbol == bestIcon.Symbol and Reels[i] then
+                Reels[i].Stroke.Color = bestCount >= 3 and C_GOLD or C_GREEN
+                Reels[i].Stroke.Thickness = 2
+            end
+        end
+    end
+
+    local globalMult = GetTotalMultiplier(bet)
+    local tagPrefix = rollType == "DIAMOND" and "[💎 8x] " or (rollType == "GOLDEN" and "[✨ 2x] " or "")
+
+    if bestCount >= 3 then
+        State.SessionWins += 1
+        DataStore.Daily.Combos += 1
+        DataStore.Weekly.Combos += 1
+        local comboScale = 2.15 ^ (bestCount - 3)
+        local resonanceBonus = 1 + (State.Tech.Resonance * 0.25)
+        local winnings = math.floor(bet * bestIcon.Mult * comboScale * globalMult * resonanceBonus)
+
+        if State.Tech.Vault > 0 then
+            local vaultInterest = math.floor(State.Cash * (State.Tech.Vault * 0.0025))
+            winnings += math.min(vaultInterest, winnings * 2)
+        end
+
+        State.Cash += winnings
+        if winnings > State.BiggestWin then State.BiggestWin = winnings end
+
+        local gemBonusText = ""
+        if DataStore.Passes.gem_magnet and math.random() <= 0.18 then
+            local foundGems = math.random(1, 4)
+            DataStore.Gems += foundGems
+            gemBonusText = string.format(" (+%d 💠!)", foundGems)
+        end
+
+        SpawnFloatingWinText("+$" .. FormatNum(winnings) .. gemBonusText, rollType == "DIAMOND" and C_DIAMOND or C_GOLD)
+        BannerLbl.Text = string.format("%s🎉 %dx %s! +$%s%s", tagPrefix, bestCount, bestIcon.Name:upper(), FormatNum(winnings), gemBonusText)
+        BannerLbl.TextColor3 = rollType == "DIAMOND" and C_DIAMOND or C_GOLD
+    elseif bestCount == 2 then
+        State.SessionWins += 1
+        local winnings = math.max(1, math.floor(bet * (bestIcon.Mult * 0.35) * globalMult))
+        State.Cash += winnings
+        if winnings > State.BiggestWin then State.BiggestWin = winnings end
+        SpawnFloatingWinText("+$" .. FormatNum(winnings), C_GREEN)
+        BannerLbl.Text = string.format("%s✨ Pair of %s! +$%s", tagPrefix, bestIcon.Symbol, FormatNum(winnings))
+        BannerLbl.TextColor3 = C_GREEN
+    else
+        local cbRate = GetCashbackRate()
+        if State.HardMode and cbRate > 0 then
+            local refund = math.max(1, math.floor(bet * cbRate))
+            State.Cash += refund
+            BannerLbl.Text = string.format("%s💸 Cashback +$%s", tagPrefix, FormatNum(refund))
+            BannerLbl.TextColor3 = Color3.fromRGB(130, 200, 255)
+        else
+            BannerLbl.Text = tagPrefix .. (State.HardMode and "💀 No match — Lost bid!" or "💨 No match — Try again!")
+            BannerLbl.TextColor3 = Color3.fromRGB(165, 170, 185)
+        end
+    end
+
+    RefreshSeal()
+    MachineStroke.Color = C_GOLD
+    MachineStroke.Thickness = 1.5
+    State.Spinning = false
+    SaveData()
+    UpdateUI()
+
+    if State.AutoRebirth then
+        TriggerRebirth()
+    end
+end
+
+--// Button Connections
+SpinBtn.MouseButton1Click:Connect(DoSpin)
+
+AutoBtn.MouseButton1Click:Connect(function()
+    State.AutoSpin = not State.AutoSpin
+    AutoBtn.Text = State.AutoSpin and "🔁 AUTO\nON" or "🔁 AUTO\nOFF"
+    AutoBtn.BackgroundColor3 = State.AutoSpin and C_GREEN or C_CARD
+end)
+
+AutoRebBtn.MouseButton1Click:Connect(function()
+    State.AutoRebirth = not State.AutoRebirth
+    AutoRebBtn.Text = State.AutoRebirth and "🔄 A-REB\nON" or "🔄 A-REB\nOFF"
+    AutoRebBtn.BackgroundColor3 = State.AutoRebirth and C_ORANGE or C_CARD
+end)
+
+BetBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local cost = GetBetUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.BetLevel += 1
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+BetMaxBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local bought = false
+    while State.Cash >= GetBetUpgradeCost() do
+        State.Cash -= GetBetUpgradeCost()
+        State.BetLevel += 1
+        bought = true
+    end
+    if bought then SaveData(); UpdateUI() end
+end)
+
+SlotBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    if State.SlotCount >= 10 or State.Spinning then return end
+    local cost = GetSlotUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.SlotCount += 1
+        RebuildReels()
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+LuckBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local cost = GetLuckUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.LuckLevel += 1
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+LuckMaxBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local bought = false
+    while State.Cash >= GetLuckUpgradeCost() do
+        State.Cash -= GetLuckUpgradeCost()
+        State.LuckLevel += 1
+        bought = true
+    end
+    if bought then SaveData(); UpdateUI() end
+end)
+
+SpeedBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    if State.SpeedLevel >= MAX_SPEED_LEVEL then return end
+    local cost = GetSpeedUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.SpeedLevel += 1
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+SpeedMaxBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local bought = false
+    while State.SpeedLevel < MAX_SPEED_LEVEL and State.Cash >= GetSpeedUpgradeCost() do
+        State.Cash -= GetSpeedUpgradeCost()
+        State.SpeedLevel += 1
+        bought = true
+    end
+    if bought then SaveData(); UpdateUI() end
+end)
+
+GoldPityBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    if State.GoldenPityLevel >= 5 then return end
+    local cost = GetGoldenUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.GoldenPityLevel += 1
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+DiaPityBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    if State.DiamondPityLevel >= 45 then return end
+    local cost = GetDiamondUpgradeCost()
+    if State.Cash >= cost then
+        State.Cash -= cost
+        State.DiamondPityLevel += 1
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+RebBtn.MouseButton1Click:Connect(TriggerRebirth)
+
+PresBtn.MouseButton1Click:Connect(function()
+    if not VerifyRuntimeIntegrity() then return end
+    local req = GetPrestigeReqRebirths()
+    if State.Rebirths >= req then
+        local gained = GetPrestigeTokenGain()
+        State.PrestigeTokens += gained
+        State.Prestiges += 1
+        State.Rebirths = 0
+        State.Cash = 250
+        State.BetLevel = 1
+        State.LuckLevel = 1
+        State.SpeedLevel = 1
+        State.BailoutsLeft = GetMaxBailouts()
+        if not State.AutoMaxBid and State.ManualBid then
+            State.ManualBid = MIN_BID
+        end
+        BannerLbl.Text = string.format("👑 PRESTIGED! Earned +%s PT!", FormatNum(gained))
+        BannerLbl.TextColor3 = C_PINK
+        SaveData()
+        UpdateUI()
+    end
+end)
+
+for _, item in pairs(TechUI) do
+    item.Card:FindFirstChildOfClass("TextButton").MouseButton1Click:Connect(UpdateUI)
+end
+
+--// Daily & Weekly Quest Character Movement & Jump Tracker
+local lastTrackPos = nil
+local jumpConn = nil
+
+local function BindCharacterQuestTracker(char)
+    if jumpConn then jumpConn:Disconnect(); jumpConn = nil end
+    lastTrackPos = nil
+    if not char then return end
+
+    local hum = char:WaitForChild("Humanoid", 5)
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
+    if hrp then
+        lastTrackPos = hrp.Position
+    end
+    if hum then
+        jumpConn = hum.Jumping:Connect(function(active)
+            if active and VerifyRuntimeIntegrity() then
+                CheckTimersReset()
+                DataStore.Daily.Jumps += 1
+                DataStore.Weekly.Jumps += 1
+                RefreshSeal()
+                if QuestsPage.Visible then UpdateUI() end
+            end
+        end)
+    end
+end
+
+if LocalPlayer.Character then
+    BindCharacterQuestTracker(LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(BindCharacterQuestTracker)
+
+--// Listen for Other Players Running the Script
+local function HookPlayerSync(plr)
+    plr:GetAttributeChangedSignal(SYNC_ATTR):Connect(function()
+        if BoardPage.Visible then RebuildLeaderboardUI() end
+    end)
+end
+
+for _, plr in ipairs(Players:GetPlayers()) do HookPlayerSync(plr) end
+Players.PlayerAdded:Connect(HookPlayerSync)
+Players.PlayerRemoving:Connect(function(plr)
+    RemoteLeaderboardCache[plr.UserId] = nil
+    if BoardPage.Visible then RebuildLeaderboardUI() end
+end)
+
+--// Background Auto-Spin, Circle-Walk Stud Tracker & Leaderboard Sync Loop
+task.spawn(function()
+    local tickCount = 0
+    while ScreenGui and ScreenGui.Parent do
+        if State.AutoSpin and not State.Spinning then
+            DoSpin()
+        end
+
+        local char = LocalPlayer and LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local currPos = hrp.Position
+            if lastTrackPos then
+                local flatDelta = Vector3.new(currPos.X - lastTrackPos.X, 0, currPos.Z - lastTrackPos.Z).Magnitude
+                if flatDelta > 0.05 and flatDelta < 25 and VerifyRuntimeIntegrity() then
+                    CheckTimersReset()
+                    DataStore.Daily.Studs += flatDelta
+                    DataStore.Weekly.Studs += flatDelta
+                    RefreshSeal()
+                end
+            end
+            lastTrackPos = currPos
+        end
+
+        tickCount += 1
+        if tickCount % 40 == 0 then
+            if QuestsPage.Visible then UpdateUI() end
+            BroadcastMyStats()
+            if BoardPage.Visible then RebuildLeaderboardUI() end
+        end
+        task.wait(0.05)
+    end
+end)
+
+BroadcastMyStats()
+UpdateUI()
+
+if isNewUpdateRelease then
+    ShowUpdateModal()
+end
